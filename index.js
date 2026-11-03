@@ -371,7 +371,21 @@ async function extractGuardianPhone(jid, msg) {
         return null;
     }
 }
-
+// 🔎 नंबर पहले डेटाबेस में चेक करो: teacher / guardian / unregistered / error
+async function checkRegisteredNumber(phone) {
+    try {
+        const url = `${GOOGLE_SCRIPT_URL}?action=check_user&phone=${phone}`;
+        const r = await axios.get(url, { timeout: 12000 });
+        console.log(`🔎 check_user [${phone}] ->`, JSON.stringify(r.data));
+        const role = r.data && r.data.role;
+        if (role === 'teacher' || role === 'guardian') return role;
+        if (r.data && r.data.status === 'unregistered_number') return 'unregistered';
+        return 'error';
+    } catch (e) {
+        console.error('❌ check_user त्रुटि:', e.message);
+        return 'error';
+    }
+}
 async function startBot() {
     if (isConnecting) return;
     isConnecting = true;
@@ -458,14 +472,15 @@ async function startBot() {
 
                 if (possiblePhone.length === 10 && /^[6-9]\d{9}$/.test(possiblePhone)) {
                     try {
-                        const verifyUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${possiblePhone}&query=CHECK_USER`;
-                        const verifyRes = await axios.get(verifyUrl, { timeout: 12000 });
+                        const checkRole = await checkRegisteredNumber(possiblePhone);
 
-                        if (verifyRes.data?.status !== 'unregistered_number') {
+                        if (checkRole === 'teacher' || checkRole === 'guardian') {
                             saveLidPhoneMapping(jid, possiblePhone);
                             await sendReply(jid, `🙏 *नमस्ते!*\n\nआपका मोबाइल नंबर (*${possiblePhone}*) सफलतापूर्वक पंजीकृत कर लिया गया है।\n\nकृपया मुख्य मेन्यू देखने हेतु **Hi** लिखकर भेजें।`);
+                        } else if (checkRole === 'unregistered') {
+                            await sendReply(jid, `🙏 *आदरणीय,*\n\nयह मोबाइल नंबर (*${possiblePhone}*) विद्यालय रिकॉर्ड में पंजीकृत नहीं है।\n\nकृपया सही पंजीकृत नंबर भेजें अथवा विद्यालय कार्यालय में संपर्क करें।`);
                         } else {
-                            await sendReply(jid, `🙏 *आदरणीय अभिभावक,*\n\nयह मोबाइल नंबर (*${possiblePhone}*) विद्यालय रिकॉर्ड में पंजीकृत नहीं है।\n\nकृपया सही पंजीकृत नंबर भेजें अथवा विद्यालय कार्यालय में संपर्क करें।`);
+                            await sendReply(jid, `⚠️ सत्यापन प्रक्रिया में तकनीकी समस्या आई है। कृपया थोड़ी देर बाद पुनः प्रयास करें।`);
                         }
                     } catch (e) {
                         await sendReply(jid, `⚠️ सत्यापन प्रक्रिया में त्रुटि हुई। कृपया थोड़ी देर बाद प्रयास करें।`);
@@ -500,6 +515,21 @@ async function startBot() {
             }
 
             const searchQuery = rawText.replace(/#/g, '').trim();
+            // 🎯 STEP: पहले नंबर डेटाबेस में चेक करो: Teacher / Guardian / Unregistered
+            const role = await checkRegisteredNumber(senderPhone);
+
+            if (role === 'error') {
+                await sendReply(jid, `⚠️ अभी सत्यापन में समस्या आ रही है। कृपया थोड़ी देर बाद पुनः प्रयास करें।`);
+                return;
+            }
+            if (role === 'unregistered') {
+                await sendReply(jid, `🏫 *J.R.D. PUBLIC SCHOOL, मरुई (वाराणसी)*\n━━━━━━━━━━━━━━━━━━━━━━━\n🙏 डिजिटल हेल्पलाइन में आपका स्वागत है!\n\nआपका मोबाइल नंबर (*${senderPhone}*) विद्यालय रिकॉर्ड में पंजीकृत नहीं है।\nकृपया विद्यालय कार्यालय में संपर्क करें।\n\nनए प्रवेश हेतु विकल्प संख्या भेजें:\n1️⃣ प्रवेश जानकारी\n2️⃣ स्कूल टाइमिंग\n3️⃣ प्रबंधक संदेश\n4️⃣ लोकेशन`);
+                return;
+            }
+            if (role === 'teacher') {
+                await sendReply(jid, `🏫 *J.R.D. PUBLIC SCHOOL, मरुई*\n━━━━━━━━━━━━━━━━━━━━━━━\n🙏 नमस्ते शिक्षक जी! आपका नंबर पंजीकृत है ✅\n\nटीचर पोर्टल: https://jrdschool.in\nअन्य सहायता हेतु विद्यालय कार्यालय से संपर्क करें।`);
+                return;
+            }
 
             try {
                 const apiUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=${encodeURIComponent(searchQuery || 'CHECK_USER')}`;
