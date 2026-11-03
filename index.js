@@ -386,6 +386,47 @@ async function checkRegisteredNumber(phone) {
         return 'error';
     }
 }
+// 📊 Teacher Current & Last Month Attendance Report Helper
+async function sendTeacherAttendanceSummary(jid, phone, month, year, monthName) {
+    try {
+        await sendReply(jid, `⏳ माह *${monthName} (${year})* की उपस्थिति रिपोर्ट निकाली जा रही है, कृपया प्रतीक्षा करें...`);
+
+        const url = `${GOOGLE_SCRIPT_URL}?action=get_teacher_attendance&phone=${phone}&month=${month}&year=${year}`;
+        const res = await axios.get(url, { timeout: 15000 });
+        const resData = res.data;
+
+        if (!resData || resData.status !== 'success' || !resData.records || resData.records.length === 0) {
+            await sendReply(jid, `⚠️ माह *${monthName} (${year})* के लिए कोई उपस्थिति रिकॉर्ड दर्ज नहीं मिला।`);
+            return;
+        }
+
+        let report = `📊 *उपस्थिति रिपोर्ट: ${monthName} ${year}*\n`;
+        report += `🏫 *J.R.D. Public School, Marui*\n`;
+        report += `━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        report += `✅ कुल उपस्थित (PRESENT): ${resData.summary.present || 0} दिन\n`;
+        report += `❌ कुल अनुपस्थित (ABSENT): ${resData.summary.absent || 0} दिन\n`;
+        if (resData.summary.leave) {
+            report += `🏖️ स्वीकृत अवकाश (LEAVE): ${resData.summary.leave} दिन\n`;
+        }
+        report += `━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+        report += `📅 *दैनिक विवरण (Date-wise):*\n`;
+
+        resData.records.forEach(r => {
+            let icon = '✅';
+            if (r.status.includes('ABSENT') || r.status === 'A') icon = '❌';
+            else if (r.status.includes('LEAVE') || r.status === 'L') icon = '🏖️';
+
+            report += `${icon} *${r.date}:* ${r.status} (आगमन: ${r.inTime || '--'} | प्रस्थान: ${r.outTime || '--'})\n`;
+        });
+
+        report += `\n🔗 *पोर्टल लिंक:* https://jrdschool.online/teacherlive.html`;
+
+        await sendReply(jid, report);
+    } catch (err) {
+        console.error('Teacher attendance error:', err.message);
+        await sendReply(jid, `⚠️ रिपोर्ट प्राप्त करने में तकनीकी समस्या आई है। कृपया थोड़ी देर बाद प्रयास करें।`);
+    }
+}
 async function startBot() {
     if (isConnecting) return;
     isConnecting = true;
@@ -526,11 +567,48 @@ async function startBot() {
                 await sendReply(jid, `🏫 *J.R.D. PUBLIC SCHOOL, मरुई (वाराणसी)*\n━━━━━━━━━━━━━━━━━━━━━━━\n🙏 डिजिटल हेल्पलाइन में आपका स्वागत है!\n\nआपका मोबाइल नंबर (*${senderPhone}*) विद्यालय रिकॉर्ड में पंजीकृत नहीं है।\nकृपया विद्यालय कार्यालय में संपर्क करें।\n\nनए प्रवेश हेतु विकल्प संख्या भेजें:\n1️⃣ प्रवेश जानकारी\n2️⃣ स्कूल टाइमिंग\n3️⃣ प्रबंधक संदेश\n4️⃣ लोकेशन`);
                 return;
             }
+            // 👨‍🏫 TEACHER FLOW
             if (role === 'teacher') {
-                await sendReply(jid, `🏫 *J.R.D. PUBLIC SCHOOL, मरुई*\n━━━━━━━━━━━━━━━━━━━━━━━\n🙏 नमस्ते शिक्षक जी! आपका नंबर पंजीकृत है ✅\n\nटीचर पोर्टल: https://jrdschool.in\nअन्य सहायता हेतु विद्यालय कार्यालय से संपर्क करें।`);
+                const now = new Date();
+                const currentMonth = now.getMonth() + 1;
+                const currentYear = now.getFullYear();
+
+                let lastMonth = currentMonth - 1;
+                let lastYear = currentYear;
+                if (lastMonth === 0) {
+                    lastMonth = 12;
+                    lastYear = currentYear - 1;
+                }
+
+                const monthNames = [
+                    "", "जनवरी", "फ़रवरी", "मार्च", "अप्रैल", "मई", "जून", 
+                    "जुलाई", "अगस्त", "सितम्बर", "अक्टूबर", "नवम्बर", "दिसम्बर"
+                ];
+
+                if (rawText === '1') {
+                    await sendTeacherAttendanceSummary(jid, senderPhone, currentMonth, currentYear, monthNames[currentMonth]);
+                    return;
+                }
+
+                if (rawText === '2') {
+                    await sendTeacherAttendanceSummary(jid, senderPhone, lastMonth, lastYear, monthNames[lastMonth]);
+                    return;
+                }
+
+                const teacherMenu = `🏫 *J.R.D. PUBLIC SCHOOL (शिक्षक सेवा)*\n` +
+                    `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                    `🙏 नमस्ते शिक्षक जी! आपका स्वागत है।\n\n` +
+                    `🔗 *शिक्षक लाइव पोर्टल:*\nhttps://jrdschool.online/teacherlive.html\n\n` +
+                    `📋 *दैनिक उपस्थिति विवरण हेतु विकल्प चुनें:*\n` +
+                    `1️⃣ *चालू माह (${monthNames[currentMonth]}) की उपस्थिति*\n` +
+                    `2️⃣ *पिछले माह (${monthNames[lastMonth]}) की उपस्थिति*\n\n` +
+                    `👉 _कृपया केवल **1** या **2** लिखकर भेजें।_`;
+
+                await sendReply(jid, teacherMenu);
                 return;
             }
 
+            // 👨‍👩‍👧 GUARDIAN FLOW
             try {
                 const apiUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=${encodeURIComponent(searchQuery || 'CHECK_USER')}`;
                 const response = await axios.get(apiUrl, { timeout: 12000 });
@@ -546,7 +624,7 @@ async function startBot() {
                 }
 
                 if (isGreeting) {
-                    const menuText = `🏫 *J.R.D. PUBLIC SCHOOL*\n📍 *मरुई, वाराणसी (उ.प्र.)*\n━━━━━━━━━━━━━━━━━━━━━━━\n🙏 *अभिभावक डिजिटल सेवा केंद्र*\n\n1️⃣ *नया एडमिशन (2026-27)*\n2️⃣ *स्कूल टाइमिंग*\n3️⃣ *प्रबंधक संदेश*\n4️⃣ *लोकेशन*\n\n🔎 *बच्चे की फीस / प्रोफाइल देखने हेतु:*\nबच्चे का **नाम** (# के साथ) या **Enrolment No.** भेजें (उदा: *#Aditya* या *1024*)\n\n_आपका नंबर पंजीकृत है ✅_`;
+                    const menuText = `🏫 *J.R.D. PUBLIC SCHOOL*\n📍 *मरुई, वाराणसी (उ.प्र.)*\n━━━━━━━━━━━━━━━━━━━━━━━\n🙏 *अभिभावक डिजिटल सेवा केंद्र*\n\n🔗 *छात्र पोर्टल:* https://jrdschool.online/studentdemo.html\n\n1️⃣ *नया एडमिशन (2026-27)*\n2️⃣ *स्कूल टाइमिंग*\n3️⃣ *प्रबंधक संदेश*\n4️⃣ *लोकेशन*\n\n🔎 *बच्चे की फीस / प्रोफाइल देखने हेतु:*\nबच्चे का **नाम** (# के साथ) या **Enrolment No.** भेजें (उदा: *#Aditya* या *1024*)\n\n_आपका नंबर पंजीकृत है ✅_`;
                     await sendReply(jid, menuText);
                     return;
                 }
