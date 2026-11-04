@@ -516,8 +516,8 @@ async function startBot() {
 
                 if (possiblePhone.length === 10 && /^[6-9]\d{9}$/.test(possiblePhone)) {
                     try {
-                        const checkRole = await checkRegisteredNumber(possiblePhone);
-
+              const checkRoleData = await checkRegisteredNumber(possiblePhone);
+              const checkRole = checkRoleData.role;
                         if (checkRole === 'teacher' || checkRole === 'guardian') {
                             saveLidPhoneMapping(jid, possiblePhone);
                             await sendReply(jid, `🙏 *नमस्ते!*\n\nआपका मोबाइल नंबर (*${possiblePhone}*) सफलतापूर्वक पंजीकृत कर लिया गया है।\n\nकृपया मुख्य मेन्यू देखने हेतु **Hi** लिखकर भेजें।`);
