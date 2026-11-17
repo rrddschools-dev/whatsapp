@@ -635,65 +635,136 @@ async function startBot() {
                 return;
             }
 
-            // 👨‍👩‍👧 4. GUARDIAN SECTION (School Info + Student Fees & Profile)
-            const isGreeting = ['hi', 'hello', 'नमस्ते', 'menu', 'start', 'good morning', 'suprabhat', 'जय हिंद'].includes(lowerText);
-            const isOptionNum = ['1', '2', '3', '4'].includes(lowerText);
+            // 👨‍👩‍👧 4. GUARDIAN SECTION (Official Parent Desk Menu + Profile/Fees + Login ID/Password)
+            if (role === 'guardian') {
+                // विकल्प 1: बच्चे की फीस एवं प्रोफाइल देखें
+                if (rawText === '1' || lowerText === 'fee' || lowerText === 'fees' || lowerText === 'profile') {
+                    try {
+                        await sendReply(jid, `⏳ आपके पंजीकृत नंबर से जुड़े विद्यार्थी का विवरण निकाला जा रहा है, कृपया प्रतीक्षा करें...`);
+                        const apiUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=ALL`;
+                        const response = await axios.get(apiUrl, { timeout: 15000 });
+                        const resData = response.data || {};
 
-            if (isOptionNum) {
-                if (lowerText === '1') {
-                    await sendReply(jid, `📝 *नया प्रवेश प्रारंभ (सत्र 2026-27)*\n🏫 *J.R.D. Public School, मरुई, वाराणसी*\n━━━━━━━━━━━━━━━━━━━━━━━\n• संस्कारयुक्त एवं उच्च स्तरीय डिजिटल शिक्षा\n• कंप्यूटर लैब एवं योग्य शिक्षक वृन्द\n\n📞 *प्रवेश हेतु विद्यालय कार्यालय में संपर्क करें।*`);
-                    return;
-                }
-                if (lowerText === '2') {
-                    await sendReply(jid, `⏰ *स्कूल समय सारणी*\n🏫 *J.R.D. Public School*\n━━━━━━━━━━━━━━━━━━━━━━━\n⏱ *समय:* प्रातः 07:30 AM से दोपहर 01:30 PM तक\n📅 *दिन:* सोमवार से शनिवार\n\n_नोट: कृपया बच्चों को समय से पूर्ण गणवेश (Uniform) में भेजें।_`);
-                    return;
-                }
-                if (lowerText === '3') {
-                    await sendReply(jid, `👑 *प्रबंधकीय संदेश*\n🏫 *J.R.D. Public School Management*\n━━━━━━━━━━━━━━━━━━━━━━━\n✨ *संस्थापक:* स्व. श्री बंशगोपाल वर्मा जी\n✨ *प्रबंधक:* डॉ. बंशलाल जी\n\n> *"हम प्रत्येक बच्चे के सर्वांगीण विकास एवं उज्ज्वल भविष्य के लिए समर्पित हैं।"*`);
-                    return;
-                }
-                if (lowerText === '4') {
-                    await sendReply(jid, `📍 *विद्यालय लोकेशन:*\nJ.R.D. Public School, ग्राम व पोस्ट - मरुई, चोलापुर, जिला - वाराणसी (उ.प्र.) - 221208\n\n🗺 *गूगल मैप्स पर ढूँढें:*\nGoogle Maps पर खोजें: *JRD Public School Marui Varanasi*`);
-                    return;
-                }
-            }
+                        if (resData.status === 'success') {
+                            const studentsList = Array.isArray(resData.students) ? resData.students : (resData.data ? [resData.data] : []);
+                            if (studentsList.length > 0) {
+                                for (const st of studentsList) {
+                                    await sendStudentProfileCard(jid, st);
+                                }
+                                return;
+                            }
+                        }
+                        await sendReply(jid, `⚠️ आपके मोबाइल नंबर (*${senderPhone}*) से वर्तमान सत्र (2026-27) में कोई छात्र प्रोफाइल नहीं मिली। कृपया विद्यालय कार्यालय में संपर्क करें।`);
+                    } catch (err) {
+                        console.error('Guardian Profile Fetch Error:', err.message);
+                        await sendReply(jid, `⚠️ विवरण प्राप्त करने में तकनीकी समस्या आई है। कृपया थोड़ी देर बाद प्रयास करें।`);
+                    }
+                    return;
+                }
 
-            if (isGreeting) {
-                const menuText = `🏫 *J.R.D. PUBLIC SCHOOL*\n📍 *मरुई, वाराणसी (उ.प्र.)*\n━━━━━━━━━━━━━━━━━━━━━━━\n🙏 *अभिभावक डिजिटल सेवा केंद्र*\n\n🔗 *छात्र पोर्टल:* https://jrdschool.online/studentdemo.html\n\n1️⃣ *नया एडमिशन (2026-27)*\n2️⃣ *स्कूल टाइमिंग*\n3️⃣ *प्रबंधक संदेश*\n4️⃣ *लोकेशन*\n\n🔎 *बच्चे की फीस / प्रोफाइल देखने हेतु:*\nबच्चे का **नाम** (# के साथ) या **Enrolment No.** भेजें (उदा: *#Aditya* या *1024*)\n\n_आपका नंबर पंजीकृत है ✅_`;
-                await sendReply(jid, menuText);
-                return;
-            }
+                // विकल्प 2: बच्चे की लॉगिन ID एवं Password देखें
+                if (rawText === '2' || lowerText === 'id' || lowerText === 'password' || lowerText === 'pass' || lowerText === 'login') {
+                    try {
+                        let studentsList = Array.isArray(userData.students) ? userData.students : [];
 
-            const searchQuery = rawText.replace(/#/g, '').trim();
+                        if (studentsList.length === 0) {
+                            const apiUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=ALL`;
+                            const response = await axios.get(apiUrl, { timeout: 15000 });
+                            const resData = response.data || {};
+                            if (resData.status === 'success') {
+                                studentsList = Array.isArray(resData.students) ? resData.students : (resData.data ? [resData.data] : []);
+                            }
+                        }
 
-            try {
-                const apiUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=${encodeURIComponent(searchQuery || 'CHECK_USER')}`;
-                const response = await axios.get(apiUrl, { timeout: 12000 });
-                const resData = response.data || {};
+                        if (studentsList.length > 0) {
+                            let credMsg = `🏫 *J.R.D. PUBLIC SCHOOL, मरुई*\n` +
+                                `🔐 *आधिकारिक छात्र लॉगिन विवरण (STUDENT LOGIN)*\n` +
+                                `━━━━━━━━━━━━━━━━━━━━━━━\n`;
 
-                if (rawText.includes('#') || searchQuery.length >= 2) {
-                    if (resData.status === 'success') {
-                        await sendStudentProfileCard(jid, resData.data);
-                    } else if (resData.status === 'student_not_associated_with_number' || resData.status === 'not_found') {
-                        await sendReply(jid, `❌ *रिकॉर्ड नहीं मिला*\n\nछात्र विवरण *"${searchQuery}"* आपके पंजीकृत मोबाइल नंबर से जुड़ा नहीं मिला।\n\nकृपया सही नाम # के साथ (उदा: *#Aditya*) या Enrolment No भेजें।`);
-                    }
-                    return;
-                }
+                            studentsList.forEach((st, idx) => {
+                                const sName = st.name || st.student_name || 'विद्यार्थी';
+                                const sClass = st.class || st.class_name || 'N/A';
+                                const sId = st.enrolment || st.enroll || 'N/A';
+                                const sPass = st.password || st.student_pass || 'jrd123';
+                                credMsg += `👤 *विद्यार्थी ${studentsList.length > 1 ? (idx + 1) : ''}:* *${sName}*\n` +
+                                    `🏫 *कक्षा:* ${sClass}\n` +
+                                    `🆔 *Login ID (Enrolment):* \`${sId}\`\n` +
+                                    `🔑 *Password:* \`${sPass}\`\n` +
+                                    `━━━━━━━━━━━━━━━━━━━━━━━\n`;
+                            });
 
-                await sendReply(jid, `🙏 *JRD Public School, मरुई* में आपका स्वागत है!\n\nबच्चे की फीस या प्रोफाइल देखने के लिए उसका **नाम** (# के साथ) या **Enrolment No** भेजें (उदा: *#Aditya*)।\n\nमुख्य मेन्यू हेतु **Menu** लिखें।`);
+                            credMsg += `🌐 *छात्र लॉगिन पोर्टल लिंक:*\nhttps://jrdschool.online/studentdemo.html\n\n` +
+                                `⚠️ _सुरक्षा चेतावनी: कृपया अपनी लॉगिन जानकारी सुरक्षित रखें।_`;
 
-            } catch (error) {
-                console.error('Database Search Error:', error.message);
-                if (isGreeting) {
-                    await sendReply(jid, `🏫 *J.R.D. PUBLIC SCHOOL, मरुई*\n\nमुख्य मेन्यू देखने हेतु **Menu** लिखें।`);
-                }
-            }
-        });
+                            await sendReply(jid, credMsg);
+                        } else {
+                            await sendReply(jid, `⚠️ आपके नंबर से जुड़ा कोई छात्र लॉगिन रिकॉर्ड नहीं मिला। कृपया विद्यालय कार्यालय में संपर्क करें।`);
+                        }
+                    } catch (err) {
+                        console.error('Student Login Fetch Error:', err.message);
+                        await sendReply(jid, `⚠️ लॉगिन विवरण प्राप्त करने में समस्या आई है। कृपया पुनः प्रयास करें।`);
+                    }
+                    return;
+                }
 
-    } catch (err) {
-        isConnecting = false;
-        console.error('❌ startBot त्रुटि:', err.message);
-    }
+                // विकल्प 3: स्कूल टाइमिंग
+                if (rawText === '3') {
+                    await sendReply(jid, `⏰ *स्कूल समय सारणी*\n🏫 *J.R.D. Public School*\n━━━━━━━━━━━━━━━━━━━━━━━\n⏱ *समय:* प्रातः 07:30 AM से दोपहर 01:30 PM तक\n📅 *दिन:* सोमवार से शनिवार\n\n_नोट: कृपया बच्चों को समय से पूर्ण गणवेश (Uniform) में भेजें।_`);
+                    return;
+                }
+
+                // विकल्प 4: नया प्रवेश एवं प्रबंधक संदेश
+                if (rawText === '4') {
+                    await sendReply(jid, `📝 *नया प्रवेश प्रारंभ (सत्र 2026-27)*\n🏫 *J.R.D. Public School, मरुई, वाराणसी*\n━━━━━━━━━━━━━━━━━━━━━━━\n• संस्कारयुक्त एवं उच्च स्तरीय डिजिटल शिक्षा\n• कंप्यूटर लैब एवं योग्य शिक्षक वृन्द\n\n👑 *प्रबंधकीय संदेश:*\n✨ *संस्थापक:* स्व. श्री बंशगोपाल वर्मा जी\n✨ *प्रबंधक:* डॉ. बंशलाल जी\n> *"हम प्रत्येक बच्चे के सर्वांगीण विकास एवं उज्ज्वल भविष्य के लिए समर्पित हैं।"*\n\n📞 *प्रवेश हेतु विद्यालय कार्यालय में संपर्क करें।*`);
+                    return;
+                }
+
+                // विकल्प 5: विद्यालय लोकेशन
+                if (rawText === '5') {
+                    await sendReply(jid, `📍 *विद्यालय लोकेशन:*\nJ.R.D. Public School, ग्राम व पोस्ट - मरुई, चोलापुर, जिला - वाराणसी (उ.प्र.) - 221208\n\n🗺 *गूगल मैप्स पर ढूँढें:*\nGoogle Maps पर खोजें: *JRD Public School Marui Varanasi*`);
+                    return;
+                }
+
+                // यदि अभिभावक सीधे #नाम लिखकर सर्च करे
+                if (rawText.startsWith('#')) {
+                    const searchQuery = rawText.replace(/#/g, '').trim();
+                    try {
+                        const apiUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=${encodeURIComponent(searchQuery)}`;
+                        const response = await axios.get(apiUrl, { timeout: 12000 });
+                        const resData = response.data || {};
+                        if (resData.status === 'success' && resData.data) {
+                            await sendStudentProfileCard(jid, resData.data);
+                        } else {
+                            await sendReply(jid, `❌ *रिकॉर्ड नहीं मिला*\n\nछात्र विवरण *"${searchQuery}"* आपके पंजीकृत मोबाइल नंबर से जुड़ा नहीं मिला।\n\nसभी बच्चों की जानकारी देखने के लिए केवल **1** लिखकर भेजें।`);
+                        }
+                    } catch (e) {}
+                    return;
+                }
+
+                // 🎯 DEFAULT GUARDIAN MENU (अभिभावक कुछ भी मैसेज करे तो हमेशा यह मुख्य मेन्यू जाएगा)
+                const guardianMenu = `🏫 *J.R.D. PUBLIC SCHOOL, मरुई (वाराणसी)*\n` +
+                    `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                    `🙏 *अभिभावक डिजिटल सेवा केंद्र (Parent Desk)*\n` +
+                    `नमस्ते आदरणीय अभिभावक जी! आपका स्वागत है।\n\n` +
+                    `🔗 *छात्र लाइव पोर्टल:*\nhttps://jrdschool.online/studentdemo.html\n\n` +
+                    `📋 *सुविधा हेतु विकल्प चुनें:*\n` +
+                    `1️⃣ *बच्चे की प्रोफाइल एवं फीस बकाया देखें*\n` +
+                    `2️⃣ *बच्चे की लॉगिन ID एवं Password देखें*\n` +
+                    `3️⃣ *स्कूल टाइमिंग (समय सारणी)*\n` +
+                    `4️⃣ *नया एडमिशन (2026-27) एवं प्रबंधक संदेश*\n` +
+                    `5️⃣ *विद्यालय लोकेशन (Google Map)*\n\n` +
+                    `👉 _कृपया केवल **1**, **2**, **3**, **4** या **5** लिखकर भेजें।_\n` +
+                    `_आपका नंबर पंजीकृत है ✅_`;
+
+                await sendReply(jid, guardianMenu);
+                return;
+            }
+        });
+
+    } catch (err) {
+        isConnecting = false;
+        console.error('❌ startBot त्रुटि:', err.message);
+    }
 }
 
 async function sendReply(jid, text) {
