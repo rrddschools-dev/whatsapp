@@ -670,6 +670,22 @@ async function startBot() {
                 if (rawText === '1' || lowerText === 'fee' || lowerText === 'fees' || lowerText === 'profile') {
                     try {
                         await sendReply(jid, `⏳ आपके पंजीकृत नंबर से जुड़े ${isMultiChild ? 'सभी विद्यार्थियों' : 'विद्यार्थी'} का विवरण निकाला जा रहा है, कृपया प्रतीक्षा करें...`);
+                        // 🎯 हर पंजीकृत बच्चे का कार्ड अलग-अलग enrolment से निकालो (Apps Script 'ALL' पर निर्भर नहीं)
+                        if (registeredStudents.length > 0) {
+                            let sentAny = false;
+                            for (const rs of registeredStudents) {
+                                try {
+                                    const rq = encodeURIComponent(rs.enrolment || rs.name || '');
+                                    const r1 = await axios.get(`${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=${rq}`, { timeout: 15000 });
+                                    const d1 = r1.data || {};
+                                    if (d1.status === 'success' && d1.data) {
+                                        await sendStudentProfileCard(jid, d1.data);
+                                        sentAny = true;
+                                    }
+                                } catch (e1) { console.error('Child card fetch error:', e1.message); }
+                            }
+                            if (sentAny) return;
+                        }
                         const apiUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=ALL`;
                         const response = await axios.get(apiUrl, { timeout: 15000 });
                         const resData = response.data || {};
