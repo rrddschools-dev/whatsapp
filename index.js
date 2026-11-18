@@ -287,6 +287,9 @@ app.post('/sync-to-sheet', async (req, res) => {
     }
 });
 const messageCache = new Map();
+const pausedChats = new Map(); // ⏸️ STOP किए गए नंबरों का अस्थायी लॉक
+const PAUSE_DURATION_MS = 45 * 60 * 1000; // ⏱️ 45 मिनट
+const APK_DOWNLOAD_URL = "https://github.com/आपका-यूजरनेम/रिपॉजिटरी/releases/download/v1.0/JRD_School.apk"; // 📲 असली APK लिंक यहाँ डालें
 const msgRetryCounterCache = new Map();
 
 let sock = null;
@@ -495,152 +498,178 @@ async function startBot() {
             }
         });
 
-        sock.ev.on('messages.upsert', async ({ messages, type }) => {
-            if (type !== 'notify') return;
-            const msg = messages[0];
-            if (!msg.message || msg.key.fromMe) return;
+        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+            if (type !== 'notify') return;
+            const msg = messages[0];
+            if (!msg.message) return;
 
-            const jid = msg.key.remoteJid;
-            if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return;
+            const jid = msg.key.remoteJid;
+            if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return;
 
-            try { await sock.readMessages([msg.key]); } catch (e) {}
+            const rawText = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
+            const lowerText = rawText.toLowerCase();
 
-            const senderPhone = await extractGuardianPhone(jid, msg);
-            const rawText = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
-            const lowerText = rawText.toLowerCase();
+            // 🛑 1. MANAGER STOP / START CONTROL (केवल आपके स्वयं भेजने पर - रजिस्टर्ड व अनरजिस्टर्ड सभी पर लागू)
+            if (msg.key.fromMe) {
+                if (lowerText === 'stop') {
+                    pausedChats.set(jid, Date.now() + PAUSE_DURATION_MS);
+                    await sendReply(jid, `⏸️ *ऑटो-हेल्पलाइन सेवा 45 मिनट के लिए रोकी गई है।*\nअब आप सीधे विद्यालय प्रबंधन से संवाद कर सकते हैं।\n_(पुनः चालू करने हेतु *START* लिखें)_`);
+                    return;
+                }
+                if (lowerText === 'start') {
+                    if (pausedChats.has(jid)) {
+                        pausedChats.delete(jid);
+                        await sendReply(jid, `▶️ *ऑटो-हेल्पलाइन सेवा पुनः सक्रिय कर दी गई है।*\nमुख्य मेन्यू देखने हेतु *Hi* लिखें।`);
+                    }
+                    return;
+                }
+                return; // आपके किसी भी सामान्य चैट मैसेज पर बॉट नहीं बोलेगा
+            }
 
-            console.log(`📱 संदेश प्राप्त | नंबर: [${senderPhone || 'अज्ञात'}] | पाठ: "${rawText}"`);
+            // ⏸️ 2. यदि यह चैट STOP मोड में है, तो चैट/मेन्यू रिप्लाई बंद रखें (ज़रूरी स्कूल अलर्ट चलते रहेंगे)
+            if (pausedChats.has(jid)) {
+                const expiryTime = pausedChats.get(jid);
+                if (Date.now() < expiryTime) {
+                    return; // अभी 45 मिनट पूरे नहीं हुए हैं, चैट मेन्यू चुप रहेगा
+                } else {
+                    pausedChats.delete(jid); // 45 मिनट पूरे होते ही अपने आप सामान्य हो जाएगा
+                }
+            }
 
-            if (!senderPhone) {
-                const possiblePhone = rawText.replace(/[^0-9]/g, '');
+            try { await sock.readMessages([msg.key]); } catch (e) {}
 
-                if (possiblePhone.length === 10 && /^[6-9]\d{9}$/.test(possiblePhone)) {
-                    try {
-              const checkRoleData = await checkRegisteredNumber(possiblePhone);
-              const checkRole = checkRoleData.role;
-                        if (checkRole === 'teacher' || checkRole === 'guardian') {
-                            saveLidPhoneMapping(jid, possiblePhone);
-                            await sendReply(jid, `🙏 *नमस्ते!*\n\nआपका मोबाइल नंबर (*${possiblePhone}*) सफलतापूर्वक पंजीकृत कर लिया गया है।\n\nकृपया मुख्य मेन्यू देखने हेतु **Hi** लिखकर भेजें।`);
-                        } else if (checkRole === 'unregistered') {
-                            await sendReply(jid, `🙏 *आदरणीय,*\n\nयह मोबाइल नंबर (*${possiblePhone}*) विद्यालय रिकॉर्ड में पंजीकृत नहीं है।\n\nकृपया सही पंजीकृत नंबर भेजें अथवा विद्यालय कार्यालय में संपर्क करें।`);
-                        } else {
-                            await sendReply(jid, `⚠️ सत्यापन प्रक्रिया में तकनीकी समस्या आई है। कृपया थोड़ी देर बाद पुनः प्रयास करें।`);
-                        }
-                    } catch (e) {
-                        await sendReply(jid, `⚠️ सत्यापन प्रक्रिया में त्रुटि हुई। कृपया थोड़ी देर बाद प्रयास करें।`);
-                    }
-                    return;
-                }
+            const senderPhone = await extractGuardianPhone(jid, msg);
+            console.log(`📱 संदेश प्राप्त | नंबर: [${senderPhone || 'अज्ञात'}] | पाठ: "${rawText}"`);
 
-                await sendReply(jid, `🙏 *नमस्ते!*\n\nJ.R.D. Public School की डिजिटल हेल्पलाइन में आपका स्वागत है।\n\nसुरक्षा कारणों से आपका नंबर स्वतः पहचाना नहीं जा सका। कृपया अपना **10 अंकों का पंजीकृत मोबाइल नंबर** यहाँ टाइप करके भेजें (उदा: 9792649799)।`);
-                return;
-            }
+            if (!senderPhone) {
+                const possiblePhone = rawText.replace(/[^0-9]/g, '');
 
-           // 🎯 1. SABSE PEHLE DATABASE ROLE CHECK KAREIN
-            const userData = await checkRegisteredNumber(senderPhone);
-            const role = userData.role;
+                if (possiblePhone.length === 10 && /^[6-9]\d{9}$/.test(possiblePhone)) {
+                    try {
+                        const checkRoleData = await checkRegisteredNumber(possiblePhone);
+                        const checkRole = checkRoleData.role;
+                        if (checkRole === 'teacher' || checkRole === 'guardian') {
+                            saveLidPhoneMapping(jid, possiblePhone);
+                            await sendReply(jid, `🙏 *नमस्ते!*\n\nआपका मोबाइल नंबर (*${possiblePhone}*) सफलतापूर्वक पंजीकृत कर लिया गया है।\n\nकृपया मुख्य मेन्यू देखने हेतु **Hi** लिखकर भेजें।`);
+                        } else if (checkRole === 'unregistered') {
+                            await sendReply(jid, `🙏 *आदरणीय,*\n\nयह मोबाइल नंबर (*${possiblePhone}*) विद्यालय रिकॉर्ड में पंजीकृत नहीं है।\n\nकृपया सही पंजीकृत नंबर भेजें अथवा विद्यालय कार्यालय में संपर्क करें।`);
+                        } else {
+                            await sendReply(jid, `⚠️ सत्यापन प्रक्रिया में तकनीकी समस्या आई है। कृपया थोड़ी देर बाद पुनः प्रयास करें।`);
+                        }
+                    } catch (e) {
+                        await sendReply(jid, `⚠️ सत्यापन प्रक्रिया में त्रुटि हुई। कृपया थोड़ी देर बाद प्रयास करें।`);
+                    }
+                    return;
+                }
 
-            if (role === 'error') {
-                await sendReply(jid, `⚠️ अभी सत्यापन में समस्या आ रही है। कृपया थोड़ी देर बाद पुनः प्रयास करें।`);
-                return;
-            }
+                await sendReply(jid, `🙏 *नमस्ते!*\n\nJ.R.D. Public School की डिजिटल हेल्पलाइन में आपका स्वागत है।\n\nसुरक्षा कारणों से आपका नंबर स्वतः पहचाना नहीं जा सका। कृपया अपना **10 अंकों का पंजीकृत मोबाइल नंबर** यहाँ टाइप करके भेजें (उदा: 9792649799)।`);
+                return;
+            }
 
-            // 🚫 2. UNREGISTERED NUMBER
-            if (role === 'unregistered') {
-                if (rawText === '1') {
-                    await sendReply(jid, `📝 *नया प्रवेश प्रारंभ (सत्र 2026-27)*\n🏫 *J.R.D. Public School, मरुई, वाराणसी*\n━━━━━━━━━━━━━━━━━━━━━━━\n• संस्कारयुक्त एवं उच्च स्तरीय डिजिटल शिक्षा\n• कंप्यूटर लैब एवं योग्य शिक्षक वृन्द\n\n📞 *प्रवेश हेतु विद्यालय कार्यालय में संपर्क करें।*`);
-                    return;
-                }
-                if (rawText === '2') {
-                    await sendReply(jid, `⏰ *स्कूल समय सारणी*\n🏫 *J.R.D. Public School*\n━━━━━━━━━━━━━━━━━━━━━━━\n⏱ *समय:* प्रातः 07:30 AM से दोपहर 01:30 PM तक\n📅 *दिन:* सोमवार से शनिवार\n\n_नोट: कृपया बच्चों को समय से पूर्ण गणवेश (Uniform) में भेजें।_`);
-                    return;
-                }
-                if (rawText === '3') {
-                    await sendReply(jid, `👑 *प्रबंधकीय संदेश*\n🏫 *J.R.D. Public School Management*\n━━━━━━━━━━━━━━━━━━━━━━━\n✨ *संस्थापक:* स्व. श्री बंशगोपाल वर्मा जी\n✨ *प्रबंधक:* डॉ. बंशलाल जी\n\n> *"हम प्रत्येक बच्चे के सर्वांगीण विकास एवं उज्ज्वल भविष्य के लिए समर्पित हैं।"*`);
-                    return;
-                }
-                if (rawText === '4') {
-                    await sendReply(jid, `📍 *विद्यालय लोकेशन:*\nJ.R.D. Public School, ग्राम व पोस्ट - मरुई, चोलापुर, जिला - वाराणसी (उ.प्र.) - 221208\n\n🗺 *गूगल मैप्स पर ढूँढें:*\nGoogle Maps पर खोजें: *JRD Public School Marui Varanasi*`);
-                    return;
-                }
+            // 🎯 1. SABSE PEHLE DATABASE ROLE CHECK KAREIN
+            const userData = await checkRegisteredNumber(senderPhone);
+            const role = userData.role;
 
-                await sendReply(jid, `🏫 *J.R.D. PUBLIC SCHOOL, मरुई (वाराणसी)*\n━━━━━━━━━━━━━━━━━━━━━━━\n🙏 डिजिटल हेल्पलाइन में आपका स्वागत है!\n\nआपका मोबाइल नंबर (*${senderPhone}*) विद्यालय रिकॉर्ड में पंजीकृत नहीं है।\nकृपया विद्यालय कार्यालय में संपर्क करें।\n\nनए प्रवेश हेतु विकल्प संख्या भेजें:\n1️⃣ प्रवेश जानकारी\n2️⃣ स्कूल टाइमिंग\n3️⃣ प्रबंधक संदेश\n4️⃣ लोकेशन`);
-                return;
-            }
+            if (role === 'error') {
+                await sendReply(jid, `⚠️ अभी सत्यापन में समस्या आ रही है। कृपया थोड़ी देर बाद पुनः प्रयास करें।`);
+                return;
+            }
 
-            // 👨‍🏫 3. TEACHER SECTION (Attendance 1/2 + ID Password 3)
-            if (role === 'teacher') {
-                const now = new Date();
-                const currentMonth = now.getMonth() + 1;
-                const currentYear = now.getFullYear();
+            // 🚫 2. UNREGISTERED NUMBER
+            if (role === 'unregistered') {
+                if (rawText === '1') {
+                    await sendReply(jid, `📝 *नया प्रवेश प्रारंभ (सत्र 2026-27)*\n🏫 *J.R.D. Public School, मरुई, वाराणसी*\n━━━━━━━━━━━━━━━━━━━━━━━\n• संस्कारयुक्त एवं उच्च स्तरीय डिजिटल शिक्षा\n• कंप्यूटर लैब एवं योग्य शिक्षक वृन्द\n\n📞 *प्रवेश हेतु विद्यालय कार्यालय में संपर्क करें।*`);
+                    return;
+                }
+                if (rawText === '2') {
+                    await sendReply(jid, `⏰ *स्कूल समय सारणी*\n🏫 *J.R.D. Public School*\n━━━━━━━━━━━━━━━━━━━━━━━\n⏱ *समय:* प्रातः 07:30 AM से दोपहर 01:30 PM तक\n📅 *दिन:* सोमवार से शनिवार\n\n_नोट: कृपया बच्चों को समय से पूर्ण गणवेश (Uniform) में भेजें।_`);
+                    return;
+                }
+                if (rawText === '3') {
+                    await sendReply(jid, `👑 *प्रबंधकीय संदेश*\n🏫 *J.R.D. Public School Management*\n━━━━━━━━━━━━━━━━━━━━━━━\n✨ *संस्थापक:* स्व. श्री बंशगोपाल वर्मा जी\n✨ *प्रबंधक:* डॉ. बंशलाल जी\n\n> *"हम प्रत्येक बच्चे के सर्वांगीण विकास एवं उज्ज्वल भविष्य के लिए समर्पित हैं।"*`);
+                    return;
+                }
+                if (rawText === '4') {
+                    await sendReply(jid, `📍 *विद्यालय लोकेशन:*\nJ.R.D. Public School, ग्राम व पोस्ट - मरुई, चोलापुर, जिला - वाराणसी (उ.प्र.) - 221208\n\n🗺 *गूगल मैप्स पर ढूँढें:*\nGoogle Maps पर खोजें: *JRD Public School Marui Varanasi*`);
+                    return;
+                }
 
-                let lastMonth = currentMonth - 1;
-                let lastYear = currentYear;
-                if (lastMonth === 0) {
-                    lastMonth = 12;
-                    lastYear = currentYear - 1;
-                }
+                await sendReply(jid, `🏫 *J.R.D. PUBLIC SCHOOL, मरुई (वाराणसी)*\n━━━━━━━━━━━━━━━━━━━━━━━\n🙏 डिजिटल हेल्पलाइन में आपका स्वागत है!\n\nआपका मोबाइल नंबर (*${senderPhone}*) विद्यालय रिकॉर्ड में पंजीकृत नहीं है।\nकृपया विद्यालय कार्यालय में संपर्क करें।\n\nनए प्रवेश हेतु विकल्प संख्या भेजें:\n1️⃣ प्रवेश जानकारी\n2️⃣ स्कूल टाइमिंग\n3️⃣ प्रबंधक संदेश\n4️⃣ लोकेशन`);
+                return;
+            }
 
-                const monthNames = [
-                    "", "जनवरी", "फ़रवरी", "मार्च", "अप्रैल", "मई", "जून", 
-                    "जुलाई", "अगस्त", "सितम्बर", "अक्टूबर", "नवम्बर", "दिसम्बर"
-                ];
+            // 👨‍🏫 3. TEACHER SECTION (Attendance 1/2 + ID Password 3)
+            if (role === 'teacher') {
+                const now = new Date();
+                const currentMonth = now.getMonth() + 1;
+                const currentYear = now.getFullYear();
 
-                // Option 1: Current Month Report
-                if (rawText === '1') {
-                    await sendTeacherAttendanceSummary(jid, senderPhone, currentMonth, currentYear, monthNames[currentMonth]);
-                    return;
-                }
+                let lastMonth = currentMonth - 1;
+                let lastYear = currentYear;
+                if (lastMonth === 0) {
+                    lastMonth = 12;
+                    lastYear = currentYear - 1;
+                }
 
-                // Option 2: Last Month Report
-                if (rawText === '2') {
-                    await sendTeacherAttendanceSummary(jid, senderPhone, lastMonth, lastYear, monthNames[lastMonth]);
-                    return;
-                }
+                const monthNames = [
+                    "", "जनवरी", "फ़रवरी", "मार्च", "अप्रैल", "मई", "जून",
+                    "जुलाई", "अगस्त", "सितम्बर", "अक्टूबर", "नवम्बर", "दिसम्बर"
+                ];
 
-                // Option 3: ID, Password & Post
-                if (rawText === '3' || lowerText === 'id' || lowerText === 'password' || lowerText === 'pass') {
-                    const tName = userData.name || userData.teacher_name || 'शिक्षक';
-                    const tId = userData.teacher_id || userData.username || userData.id || 'N/A';
-                    const tPass = userData.password || userData.pass || 'N/A';
-                    const tPost = userData.designation || userData.post || userData.subject || 'अध्यापक';
+                if (rawText === '1') {
+                    await sendTeacherAttendanceSummary(jid, senderPhone, currentMonth, currentYear, monthNames[currentMonth]);
+                    return;
+                }
 
-                    const credMessage = `🏫 *J.R.D. PUBLIC SCHOOL, मरुई*\n` +
-                        `🔐 *आधिकारिक शिक्षक लॉगिन विवरण (LOGIN CREDENTIALS)*\n` +
-                        `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                        `👤 *शिक्षक का नाम:* ${tName}\n` +
-                        `💼 *पद (Designation):* ${tPost}\n` +
-                        `🆔 *Login ID / Username:* \`${tId}\`\n` +
-                        `🔑 *Password:* \`${tPass}\`\n` +
-                        `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                        `🌐 *लॉगिन पोर्टल लिंक:*\nhttps://jrdschool.online/teacherlive.html\n\n` +
-                        `⚠️ _सुरक्षा चेतावनी: अपना पासवर्ड किसी के साथ साझा न करें।_`;
+                if (rawText === '2') {
+                    await sendTeacherAttendanceSummary(jid, senderPhone, lastMonth, lastYear, monthNames[lastMonth]);
+                    return;
+                }
 
-                    await sendReply(jid, credMessage);
-                    return;
-                }
+                if (rawText === '3' || lowerText === 'id' || lowerText === 'password' || lowerText === 'pass') {
+                    const tName = userData.name || userData.teacher_name || 'शिक्षक';
+                    const tId = userData.teacher_id || userData.username || userData.id || 'N/A';
+                    const tPass = userData.password || userData.pass || 'N/A';
+                    const tPost = userData.designation || userData.post || userData.subject || 'अध्यापक';
 
-                // Default Teacher Menu
-                const teacherMenu = `🏫 *J.R.D. PUBLIC SCHOOL (शिक्षक डेस्क)*\n` +
-                    `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                    `🙏 नमस्ते *${userData.name || 'शिक्षक'}* जी! आपका स्वागत है।\n\n` +
-                    `🔗 *शिक्षक लाइव पोर्टल:*\nhttps://jrdschool.online/teacherlive.html\n\n` +
-                    `📋 *सुविधा हेतु विकल्प चुनें:*\n` +
-                    `1️⃣ *चालू माह (${monthNames[currentMonth]}) की उपस्थिति*\n` +
-                    `2️⃣ *पिछले माह (${monthNames[lastMonth]}) की उपस्थिति*\n` +
-                    `3️⃣ *मेरी लॉगिन ID एवं Password देखें*\n\n` +
-                    `👉 _कृपया केवल **1**, **2** या **3** लिखकर भेजें।_`;
+                    const credMessage = `🏫 *J.R.D. PUBLIC SCHOOL, मरुई*\n` +
+                        `🔐 *आधिकारिक शिक्षक लॉगिन विवरण (LOGIN CREDENTIALS)*\n` +
+                        `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                        `👤 *शिक्षक का नाम:* ${tName}\n` +
+                        `💼 *पद (Designation):* ${tPost}\n` +
+                        `🆔 *Login ID / Username:* \`${tId}\`\n` +
+                        `🔑 *Password:* \`${tPass}\`\n` +
+                        `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                        `🌐 *लॉगिन पोर्टल लिंक:*\nhttps://jrdschool.online/teacherlive.html\n\n` +
+                        `⚠️ _सुरक्षा चेतावनी: अपना पासवर्ड किसी के साथ साझा न करें।_`;
 
-                await sendReply(jid, teacherMenu);
-                return;
-            }
+                    await sendReply(jid, credMessage);
+                    return;
+                }
 
-            // 👨‍👩‍👧 4. GUARDIAN SECTION (Official Parent Desk Menu + Profile/Fees + Login ID/Password)
+                const teacherMenu = `🏫 *J.R.D. PUBLIC SCHOOL (शिक्षक डेस्क)*\n` +
+                    `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                    `🙏 नमस्ते *${userData.name || 'शिक्षक'}* जी! आपका स्वागत है।\n\n` +
+                    `🔗 *शिक्षक लाइव पोर्टल:*\nhttps://jrdschool.online/teacherlive.html\n\n` +
+                    `📋 *सुविधा हेतु विकल्प चुनें:*\n` +
+                    `1️⃣ *चालू माह (${monthNames[currentMonth]}) की उपस्थिति*\n` +
+                    `2️⃣ *पिछले माह (${monthNames[lastMonth]}) की उपस्थिति*\n` +
+                    `3️⃣ *मेरी लॉगिन ID एवं Password देखें*\n\n` +
+                    `👉 _कृपया केवल **1**, **2** या **3** लिखकर भेजें।_`;
+
+                await sendReply(jid, teacherMenu);
+                return;
+            }
+
+            // 👨‍👩‍👧 4. GUARDIAN SECTION (Fully Dynamic Singular/Plural Menu + Fees + Credentials + #Name/Enroll + APK)
             if (role === 'guardian') {
-                // विकल्प 1: बच्चे की फीस एवं प्रोफाइल देखें
+                const registeredStudents = Array.isArray(userData.students) ? userData.students : [];
+                const isMultiChild = registeredStudents.length > 1;
+
+                // विकल्प 1: बच्चे/सभी बच्चों की प्रोफाइल एवं फीस बकाया देखें
                 if (rawText === '1' || lowerText === 'fee' || lowerText === 'fees' || lowerText === 'profile') {
                     try {
-                        await sendReply(jid, `⏳ आपके पंजीकृत नंबर से जुड़े विद्यार्थी का विवरण निकाला जा रहा है, कृपया प्रतीक्षा करें...`);
+                        await sendReply(jid, `⏳ आपके पंजीकृत नंबर से जुड़े ${isMultiChild ? 'सभी विद्यार्थियों' : 'विद्यार्थी'} का विवरण निकाला जा रहा है, कृपया प्रतीक्षा करें...`);
                         const apiUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=ALL`;
                         const response = await axios.get(apiUrl, { timeout: 15000 });
                         const resData = response.data || {};
@@ -662,11 +691,10 @@ async function startBot() {
                     return;
                 }
 
-                // विकल्प 2: बच्चे की लॉगिन ID एवं Password देखें
+                // विकल्प 2: बच्चे/सभी बच्चों की लॉगिन ID एवं Password देखें
                 if (rawText === '2' || lowerText === 'id' || lowerText === 'password' || lowerText === 'pass' || lowerText === 'login') {
                     try {
-                        let studentsList = Array.isArray(userData.students) ? userData.students : [];
-
+                        let studentsList = registeredStudents;
                         if (studentsList.length === 0) {
                             const apiUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=ALL`;
                             const response = await axios.get(apiUrl, { timeout: 15000 });
@@ -725,8 +753,46 @@ async function startBot() {
                     return;
                 }
 
-                // यदि अभिभावक सीधे #नाम लिखकर सर्च करे
-                if (rawText.startsWith('#')) {
+                // विकल्प 6: स्कूल मोबाइल ऐप (Android APK) डिलीवरी इंजन
+                if (rawText === '6' || lowerText === 'app' || lowerText === 'apk') {
+                    try {
+                        await sendReply(jid, `📲 *J.R.D. Public School Official App* भेजा जा रहा है, कृपया प्रतीक्षा करें...`);
+                        const localApkPath = path.join(__dirname, 'JRD_School.apk');
+                        const apkCaption = `📱 *J.R.D. PUBLIC SCHOOL — OFFICIAL ANDROID APP*\n` +
+                            `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                            `✅ इस ऐप के माध्यम से आप घर बैठे बच्चे की लाइव उपस्थिति, फीस बकाया, डिजिटल रसीद और परीक्षा परिणाम देख सकते हैं।\n\n` +
+                            `🌐 *वेब पोर्टल:* https://jrdschool.online/studentdemo.html\n` +
+                            `_(इंस्टॉल करने हेतु फाइल पर क्लिक करें और 'Install from Unknown Sources' की अनुमति दें)_`;
+
+                        if (fs.existsSync(localApkPath)) {
+                            await sock.sendMessage(jid, {
+                                document: fs.readFileSync(localApkPath),
+                                mimetype: 'application/vnd.android.package-archive',
+                                fileName: 'JRD_Public_School.apk',
+                                caption: apkCaption
+                            });
+                        } else if (APK_DOWNLOAD_URL && APK_DOWNLOAD_URL.startsWith('http') && !APK_DOWNLOAD_URL.includes('आपका-यूजरनेम')) {
+                            await sock.sendMessage(jid, {
+                                document: { url: APK_DOWNLOAD_URL },
+                                mimetype: 'application/vnd.android.package-archive',
+                                fileName: 'JRD_Public_School.apk',
+                                caption: apkCaption
+                            });
+                        } else {
+                            await sendReply(jid, `📲 *J.R.D. Public School App & Portal*\n\n🌐 *सीधा पोर्टल लिंक:* https://jrdschool.online/studentdemo.html\n_(ऐप फ़ाइल सर्वर पर अपडेट हो रही है, तब तक ऊपर दिए गए लिंक से सभी सेवाएँ उपयोग करें)_`);
+                        }
+                    } catch (apkErr) {
+                        console.error('❌ APK Send Error:', apkErr.message);
+                        await sendReply(jid, `⚠️ ऐप फ़ाइल भेजने में तकनीकी समस्या आई। कृपया सीधा पोर्टल लिंक उपयोग करें:\nhttps://jrdschool.online/studentdemo.html`);
+                    }
+                    return;
+                }
+
+                // 🔍 किसी एक खास बच्चे का विवरण देखना (#नाम या Enrolment No. द्वारा)
+                const isGreeting = ['hi', 'hello', 'hii', 'नमस्ते', 'प्रणाम', 'menu', 'start', 'good morning', 'suprabhat', 'जय हिंद', 'ok'].includes(lowerText);
+                const isExactEnrollMatch = registeredStudents.some(st => String(st.enrolment || '').trim().toLowerCase() === lowerText);
+
+                if (!isGreeting && (rawText.startsWith('#') || isExactEnrollMatch)) {
                     const searchQuery = rawText.replace(/#/g, '').trim();
                     try {
                         const apiUrl = `${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=${encodeURIComponent(searchQuery)}`;
@@ -735,25 +801,48 @@ async function startBot() {
                         if (resData.status === 'success' && resData.data) {
                             await sendStudentProfileCard(jid, resData.data);
                         } else {
-                            await sendReply(jid, `❌ *रिकॉर्ड नहीं मिला*\n\nछात्र विवरण *"${searchQuery}"* आपके पंजीकृत मोबाइल नंबर से जुड़ा नहीं मिला।\n\nसभी बच्चों की जानकारी देखने के लिए केवल **1** लिखकर भेजें।`);
+                            await sendReply(jid, `❌ *रिकॉर्ड नहीं मिला*\n\nछात्र विवरण *"${searchQuery}"* आपके पंजीकृत मोबाइल नंबर से जुड़ा नहीं मिला।\n\n${isMultiChild ? 'सभी बच्चों' : 'बच्चे'} की जानकारी देखने के लिए केवल **1** लिखकर भेजें।`);
                         }
                     } catch (e) {}
                     return;
                 }
 
-                // 🎯 DEFAULT GUARDIAN MENU (अभिभावक कुछ भी मैसेज करे तो हमेशा यह मुख्य मेन्यू जाएगा)
+                // 🎯 DEFAULT DYNAMIC GUARDIAN MENU (1 बच्चा या 2+ बच्चों के अनुसार खुद भाषा बदलेगा)
+                const opt1Label = isMultiChild ? 'सभी बच्चों की प्रोफाइल एवं फीस बकाया देखें' : 'बच्चे की प्रोफाइल एवं फीस बकाया देखें';
+                const opt2Label = isMultiChild ? 'सभी बच्चों की लॉगिन ID एवं Password देखें' : 'बच्चे की लॉगिन ID एवं Password देखें';
+
+                let studentListBlock = '';
+                let sampleName = '#Aditya';
+                let sampleEnroll = '1024';
+
+                if (registeredStudents.length > 0) {
+                    sampleEnroll = registeredStudents[0].enrolment || '1024';
+                    sampleName = `#${(registeredStudents[0].name || 'Aditya').split(' ')[0]}`;
+
+                    if (isMultiChild) {
+                        studentListBlock = `\n👨‍👧‍👦 *आपके नंबर से पंजीकृत विद्यार्थी:*\n`;
+                        registeredStudents.forEach(st => {
+                            studentListBlock += `• *${st.name}* (${st.class}) — Enrolment: \`${st.enrolment}\`\n`;
+                        });
+                    }
+                }
+
                 const guardianMenu = `🏫 *J.R.D. PUBLIC SCHOOL, मरुई (वाराणसी)*\n` +
                     `━━━━━━━━━━━━━━━━━━━━━━━\n` +
                     `🙏 *अभिभावक डिजिटल सेवा केंद्र (Parent Desk)*\n` +
                     `नमस्ते आदरणीय अभिभावक जी! आपका स्वागत है।\n\n` +
                     `🔗 *छात्र लाइव पोर्टल:*\nhttps://jrdschool.online/studentdemo.html\n\n` +
                     `📋 *सुविधा हेतु विकल्प चुनें:*\n` +
-                    `1️⃣ *बच्चे की प्रोफाइल एवं फीस बकाया देखें*\n` +
-                    `2️⃣ *बच्चे की लॉगिन ID एवं Password देखें*\n` +
+                    `1️⃣ *${opt1Label}*\n` +
+                    `2️⃣ *${opt2Label}*\n` +
                     `3️⃣ *स्कूल टाइमिंग (समय सारणी)*\n` +
                     `4️⃣ *नया एडमिशन (2026-27) एवं प्रबंधक संदेश*\n` +
-                    `5️⃣ *विद्यालय लोकेशन (Google Map)*\n\n` +
-                    `👉 _कृपया केवल **1**, **2**, **3**, **4** या **5** लिखकर भेजें।_\n` +
+                    `5️⃣ *विद्यालय लोकेशन (Google Map)*\n` +
+                    `6️⃣ *स्कूल मोबाइल ऐप (APK) डाउनलोड करें*\n` +
+                    `${studentListBlock}\n` +
+                    `👉 _कृपया केवल **1**, **2**, **3**, **4**, **5** या **6** लिखकर भेजें।_\n\n` +
+                    `🔎 *किसी एक बच्चे का विवरण देखने हेतु:*\n` +
+                    `बच्चे का **नाम (# के साथ)** या **Enrolment No.** लिखकर भेजें _(उदा: *${sampleName}* या *${sampleEnroll}*)_\n\n` +
                     `_आपका नंबर पंजीकृत है ✅_`;
 
                 await sendReply(jid, guardianMenu);
