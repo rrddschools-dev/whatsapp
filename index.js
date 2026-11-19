@@ -30,6 +30,22 @@ try {
 const AUTH_FOLDER = path.join(__dirname, 'auth_info_baileys');
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz1CPviWaISRLeTB6wgSPKSjep78v7a48cHjs5-n9q4sPGUM_jqlWA2aUd2qbhUXKBC/exec";
 const HINDI_FEMALE_VOICE = "hi-IN-SwaraNeural";
+// 🛡️ ग्लोबल क्रैश शील्ड (नेटवर्क या FFmpeg झटके पर सर्वर कभी बंद नहीं होगा)
+process.on('uncaughtException', (err) => console.error('⚠️ Uncaught Exception:', err.message));
+process.on('unhandledRejection', (reason) => console.error('⚠️ Unhandled Rejection:', reason));
+
+// 📞 100% सटीक भारतीय नंबर क्लीनर (0, +91, .0 डेसिमल, डबल नंबर — सब सही करेगा)
+function normalizeIndianPhone(raw) {
+    if (!raw) return null;
+    const parts = String(raw).split(/[/,\n|;]+/);
+    for (const part of parts) {
+        let d = part.trim().replace(/\.\d+$/, '').replace(/[^0-9]/g, '').replace(/^0+/, '');
+        if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+        else if (d.length > 12 && d.startsWith('91')) d = d.slice(2, 12);
+        if (/^[6-9]\d{9}$/.test(d)) return '91' + d;
+    }
+    return null;
+}
 
 // 🌺 1 से 31 तारीख के प्रातःकालीन प्रेरणादायी विचार (IN-TIME QUOTES)
 const inQuotes = {
@@ -877,7 +893,10 @@ async function sendReply(jid, text) {
     try {
         if (sock && isBotReady) {
             const sent = await sock.sendMessage(jid, { text });
-            if (sent?.key?.id) messageCache.set(sent.key.id, { conversation: text });
+           if (sent?.key?.id) {
+                messageCache.set(sent.key.id, { conversation: text });
+                if (messageCache.size > 500) messageCache.delete(messageCache.keys().next().value);
+            }
         }
     } catch (err) {
         console.error('❌ उत्तर भेजने में त्रुटि:', err.message);
@@ -1415,13 +1434,33 @@ async function processQueue() {
             continue;
         }       
         const item = messageQueue[0];
-         let sendFailed = false;   
-        try {
-            let formattedNumber = item.number.toString().replace(/[^0-9]/g, '');
-            if (formattedNumber.length === 10) formattedNumber = '91' + formattedNumber;
-            const jid = formattedNumber + '@s.whatsapp.net';
+        let sendFailed = false;
+        let skipRetry = false;
+        let failReason = '';
+        try {
+            const formattedNumber = normalizeIndianPhone(item.number);
+            if (!formattedNumber) {
+                skipRetry = true;
+                failReason = 'अमान्य मोबाइल नंबर';
+                throw new Error(failReason);
+            }
+            let jid = formattedNumber + '@s.whatsapp.net';
 
-            if (sock && (isBotReady || sock.user)) {
+            if (sock && (isBotReady || sock.user)) {
+                // ✅ भेजने से पहले वेरिफाई करें कि नंबर पर WhatsApp अकाउंट है या नहीं
+                try {
+                    const waCheck = await sock.onWhatsApp(jid);
+                    if (Array.isArray(waCheck) && waCheck.length > 0) {
+                        if (!waCheck[0].exists) {
+                            skipRetry = true;
+                            failReason = 'WhatsApp अकाउंट नहीं है';
+                            throw new Error(failReason);
+                        }
+                        if (waCheck[0].jid) jid = waCheck[0].jid;
+                    }
+                } catch (chkErr) {
+                    if (skipRetry) throw chkErr;
+                }
 
                // 🎯 A. FEE REMINDER & STRUCTURE COMBO (5 सेकंड गैप + Recording/Typing + QR Fail-Safe)
                 if (item.type === 'FEE_REMINDER_COMBO' || item.type === 'FEE_STRUCTURE_COMBO') {
@@ -1814,9 +1853,9 @@ else if (item.type === 'ATTENDANCE_ALERT' || item.type === 'SUBJECT_MARKS_ALERT'
             console.error(`❌ [त्रुटि] ऑटो संदेश विफल (${item.number}):`, err.message);
         } finally {
             messageQueue.shift();
-            if (sendFailed) {
+           if (sendFailed) {
                 item._retries = (item._retries || 0) + 1;
-                if (item._retries <= 2) {
+                if (!skipRetry && item._retries <= 2) {
                     console.log(`🔄 पुनः प्रयास (${item._retries}/2) के लिए कतार में वापस डाला: ${item.number}`);
                     messageQueue.push(item);
                 } else {
@@ -1824,16 +1863,17 @@ else if (item.type === 'ATTENDANCE_ALERT' || item.type === 'SUBJECT_MARKS_ALERT'
                         time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
                         number: item.number,
                         name: item.studentName || item.name || '',
-                        type: item.type
+                        type: item.type,
+                        reason: failReason || '3 प्रयासों के बाद विफल'
                     });
                     if (failedAlertsLog.length > 100) failedAlertsLog.shift();
-                    console.error(`🛑 3 प्रयासों के बाद भी विफल: ${item.number} (${item.studentName || item.name || ''})`);
+                    console.error(`🛑 संदेश विफल (${failReason || '3 प्रयास'}): ${item.number} (${item.studentName || item.name || ''})`);
                 }
             }
             saveQueueToDisk();
 
-            // 🎯 स्मार्ट Anti-Ban गैप: फीस रिमाइंडर 45–60 सेकंड | अटेंडेंस व बाकी अलर्ट 20–30 सेकंड
-            if (messageQueue.length > 0) {
+            // 🎯 स्मार्ट Anti-Ban गैप: सिर्फ मैसेज जाने या रीट्राई पर ही इंतज़ार करें (गैर-WhatsApp पर समय न गवाएँ)
+            if (messageQueue.length > 0 && !skipRetry) {
                 const isFeeReminder = (item.type === 'FEE_REMINDER_COMBO');
                 const minDelay = isFeeReminder ? 45000 : 20000;
                 const maxDelay = isFeeReminder ? 60000 : 30000;
@@ -2108,9 +2148,10 @@ startBot();
 
 // ⚡ Self-Ping Interval (Railway सर्वर को एक्टिव रखने हेतु)
 setInterval(() => {
-    https.get('https://mp7k2cqazf71-production-noqbsigv.us-central1.suga.run/', () => {
-        console.log('⚡ Self-Ping successful');
-    }).on('error', (err) => {
+   https.get('https://mp7k2cqazf71-production-noqbsigv.us-central1.suga.run/', (res) => {
+        res.resume(); // 🧹 सॉकेट और मेमोरी लीक से 100% सुरक्षा
+        console.log('⚡ Self-Ping successful');
+    }).on('error', (err) => {
         console.error('❌ Self-Ping error:', err.message);
     });
 }, 4 * 60 * 1000);
@@ -2150,7 +2191,7 @@ app.post('/send-attendance', async (req, res) => {
         year: 'numeric'
     });
 
-    const dayOfMonth = new Date().getDate();
+    const dayOfMonth = parseInt(new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric' }), 10) || 1;
     const todayInQuote = inQuotes[dayOfMonth] || inQuotes[1];
     const todayOutQuote = outQuotes[dayOfMonth] || outQuotes[1];
 
