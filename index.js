@@ -495,6 +495,7 @@ async function startBot() {
                 console.log('\n=============================================');
                 console.log(' 🎉 JRD VIP ERP Bot Active & Ready! ');
                 console.log('=============================================\n');
+                 if (messageQueue.length > 0) processQueue();   
             }
         });
 
@@ -1380,9 +1381,28 @@ async function generateHindiVoiceNote(text) {
     }
 }
 
-// 🛡️ सुरक्षित और क्रैश-प्रूफ ऑटो-मैसेज प्रोसेसिंग क्यू
+// 🛡️ सुरक्षित और क्रैश-प्रूफ ऑटो-मैसेज प्रोसेसिंग क्यू (डिस्क बैकअप + रीट्राई)
+const QUEUE_FILE = path.join(__dirname, 'pending_queue.json');
 let messageQueue = [];
+let failedAlertsLog = [];
 let isProcessingQueue = false;
+
+function saveQueueToDisk() {
+    try { fs.writeFileSync(QUEUE_FILE, JSON.stringify(messageQueue)); } catch (e) {}
+}
+
+function loadQueueFromDisk() {
+    try {
+        if (fs.existsSync(QUEUE_FILE)) {
+            const saved = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
+            if (Array.isArray(saved) && saved.length > 0) {
+                messageQueue = saved;
+                console.log(`♻️ रीस्टार्ट के बाद ${messageQueue.length} पेंडिंग संदेश रिकवर हुए!`);
+            }
+        }
+    } catch (e) {}
+}
+loadQueueFromDisk();
 
 async function processQueue() {
     if (isProcessingQueue || messageQueue.length === 0) return;
@@ -1395,6 +1415,7 @@ async function processQueue() {
             continue;
         }       
         const item = messageQueue[0];
+         let sendFailed = false;   
         try {
             let formattedNumber = item.number.toString().replace(/[^0-9]/g, '');
             if (formattedNumber.length === 10) formattedNumber = '91' + formattedNumber;
@@ -1785,12 +1806,33 @@ else if (item.type === 'ATTENDANCE_ALERT' || item.type === 'SUBJECT_MARKS_ALERT'
                         }
                     }
                 }
-            } // if (sock && ...) बंद
-        } catch (err) {
-            console.error(`❌ [त्रुटि] ऑटो संदेश विफल (${item.number}):`, err.message);
-        } finally {
-            messageQueue.shift();
-            // 🎯 स्मार्ट Anti-Ban गैप: फीस रिमाइंडर 45–60 सेकंड | अटेंडेंस व बाकी अलर्ट 20–30 सेकंड
+           } else {
+                throw new Error('WhatsApp सॉकेट तैयार नहीं था, पुनः प्रयास के लिए रखा गया');
+            } // if (sock && ...) बंद
+        } catch (err) {
+            sendFailed = true;
+            console.error(`❌ [त्रुटि] ऑटो संदेश विफल (${item.number}):`, err.message);
+        } finally {
+            messageQueue.shift();
+            if (sendFailed) {
+                item._retries = (item._retries || 0) + 1;
+                if (item._retries <= 2) {
+                    console.log(`🔄 पुनः प्रयास (${item._retries}/2) के लिए कतार में वापस डाला: ${item.number}`);
+                    messageQueue.push(item);
+                } else {
+                    failedAlertsLog.push({
+                        time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+                        number: item.number,
+                        name: item.studentName || item.name || '',
+                        type: item.type
+                    });
+                    if (failedAlertsLog.length > 100) failedAlertsLog.shift();
+                    console.error(`🛑 3 प्रयासों के बाद भी विफल: ${item.number} (${item.studentName || item.name || ''})`);
+                }
+            }
+            saveQueueToDisk();
+
+            // 🎯 स्मार्ट Anti-Ban गैप: फीस रिमाइंडर 45–60 सेकंड | अटेंडेंस व बाकी अलर्ट 20–30 सेकंड
             if (messageQueue.length > 0) {
                 const isFeeReminder = (item.type === 'FEE_REMINDER_COMBO');
                 const minDelay = isFeeReminder ? 45000 : 20000;
@@ -1799,7 +1841,7 @@ else if (item.type === 'ATTENDANCE_ALERT' || item.type === 'SUBJECT_MARKS_ALERT'
                 console.log(`⏱️ [${item.type}] पूरा। अगला संदेश ${Math.round(waitTime / 1000)} सेकंड बाद... (पेंडिंग: ${messageQueue.length})`);
                 await new Promise(res => setTimeout(res, waitTime));
             }
-        }
+        }
     } // while (messageQueue.length > 0) बंद
     isProcessingQueue = false;
 } // processQueue फ़ंक्शन बंद
@@ -1846,7 +1888,7 @@ app.post('/enqueue-message', (req, res) => {
         details: body.details || '',
         breakdown: Array.isArray(body.breakdown) ? body.breakdown : []
     });
-
+  saveQueueToDisk();
     processQueue();
 
     return res.status(200).json({ status: 'queued', queue_length: messageQueue.length });
@@ -1883,6 +1925,7 @@ app.post('/enqueue-bulk-marks', (req, res) => {
         console.log(`✅ [Bulk Marks Engine] ${queuedCount} alerts queued. Total Queue Length: ${messageQueue.length}`);
 
         // Background asynchronous queue start
+        saveQueueToDisk();    
         processQueue();
 
         return res.status(200).json({ 
@@ -1895,26 +1938,36 @@ app.post('/enqueue-bulk-marks', (req, res) => {
         return res.status(500).json({ status: 'ERROR', message: err.message });
     }
 });
-app.post('/send-whatsapp', async (req, res) => {
-    const body = req.body || {};
-    const targetPhone = body.number || body.phone || body.mobile;
-    const message = body.message;
+app.post('/send-whatsapp', (req, res) => {
+    const body = req.body || {};
+    const targetPhone = body.number || body.phone || body.mobile || body.to;
+    const message = body.message;
 
-    if (!targetPhone || !message) return res.status(400).json({ status: 'error', message: 'Missing params' });
+    if (!targetPhone || !message || !String(message).trim()) {
+        return res.status(400).json({ status: 'error', message: 'Missing params' });
+    }
 
-    try {
-        if (!sock || !isBotReady) return res.status(503).json({ status: 'error', message: 'Bot not ready' });
+    let formattedNumber = targetPhone.toString().replace(/[^0-9]/g, '');
+    if (formattedNumber.length === 10) formattedNumber = '91' + formattedNumber;
 
-        let formattedNumber = targetPhone.toString().replace(/[^0-9]/g, '');
-        if (formattedNumber.length === 10) formattedNumber = '91' + formattedNumber;
-        const sent = await sock.sendMessage(formattedNumber + '@s.whatsapp.net', { text: message });
-        if (sent?.key?.id) messageCache.set(sent.key.id, { conversation: message });
-        return res.status(200).json({ status: 'success' });
-    } catch (error) {
-        return res.status(500).json({ status: 'error', message: error.toString() });
-    }
+    messageQueue.push({
+        number: formattedNumber,
+        message: String(message),
+        rawText: String(message),
+        type: 'TEXT',
+        msgType: 'TEXT',
+        name: body.name || body.studentName || ''
+    });
+
+    saveQueueToDisk();
+    processQueue();
+
+    return res.status(200).json({
+        status: 'success',
+        queued: true,
+        queue_length: messageQueue.length
+    });
 });
-
 app.get('/qr', (req, res) => {
     if (isBotReady) {
         return res.send('<h2 style="font-family:sans-serif; text-align:center; margin-top:50px; color:green;">✅ JRD VIP ERP व्हाट्सएप बोट कनेक्टेड है!</h2>');
@@ -2037,7 +2090,9 @@ app.get('/queue-status', (req, res) => {
         bot_ready: isBotReady,
         processing: isProcessingQueue,
         pending_count: messageQueue.length,
-        next_student: messageQueue[0] ? (messageQueue[0].studentName || messageQueue[0].name || messageQueue[0].number) : 'None'
+        next_student: messageQueue[0] ? (messageQueue[0].studentName || messageQueue[0].name || messageQueue[0].number) : 'None',
+        failed_count: failedAlertsLog.length,
+        failed_list: failedAlertsLog
     });
 });
 app.get('/', (req, res) => {
@@ -2100,11 +2155,7 @@ app.post('/send-attendance', async (req, res) => {
     const todayOutQuote = outQuotes[dayOfMonth] || outQuotes[1];
 
     try {
-        if (!sock || !isBotReady) {
-            return res.status(503).json({ status: 'error', message: 'WhatsApp Bot not ready' });
-        }
-
-        let formattedNumber = targetPhone.toString().replace(/[^0-9]/g, '');
+       let formattedNumber = targetPhone.toString().replace(/[^0-9]/g, '');
         if (formattedNumber.length === 10) formattedNumber = '91' + formattedNumber;
         const jid = formattedNumber + '@s.whatsapp.net';
 
@@ -2214,14 +2265,16 @@ app.post('/send-attendance', async (req, res) => {
 
       // 🎯 सीधे भेजने के बजाय सेफ कतार (Queue) में पुश करें
         messageQueue.push({
-            number: targetPhone.toString(),
-            message: messageText,
-            voiceText: voiceScriptText,
-            type: 'ATTENDANCE_ALERT',
-            attendance_id: body.attendance_id || null
-        });
+            number: targetPhone.toString(),
+            name: name,
+            message: messageText,
+            voiceText: voiceScriptText,
+            type: 'ATTENDANCE_ALERT',
+            attendance_id: body.attendance_id || null
+        });
 
-        processQueue();
+        saveQueueToDisk();
+        processQueue();
 
         return res.status(200).json({ status: 'success', message: 'Attendance message queued safely' });
     } catch (error) {
