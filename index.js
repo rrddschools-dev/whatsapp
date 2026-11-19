@@ -2026,7 +2026,7 @@ startBot();
 
 // ⚡ Self-Ping Interval (Railway सर्वर को एक्टिव रखने हेतु)
 setInterval(() => {
-    https.get('https://jrd-whatsapp-bot-production.up.railway.app/', () => {
+    https.get('https://mp7k2cqazf71-production-noqbsigv.us-central1.suga.run/', () => {
         console.log('⚡ Self-Ping successful');
     }).on('error', (err) => {
         console.error('❌ Self-Ping error:', err.message);
