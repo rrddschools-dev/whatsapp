@@ -29,6 +29,7 @@ try {
 
 const AUTH_FOLDER = path.join(__dirname, 'auth_info_baileys');
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz1CPviWaISRLeTB6wgSPKSjep78v7a48cHjs5-n9q4sPGUM_jqlWA2aUd2qbhUXKBC/exec";
+const GAS_TOKEN = encodeURIComponent(process.env.API_TOKEN || "");
 const HINDI_FEMALE_VOICE = "hi-IN-SwaraNeural";
 // 🛡️ ग्लोबल क्रैश शील्ड (नेटवर्क या FFmpeg झटके पर सर्वर कभी बंद नहीं होगा)
 process.on('uncaughtException', (err) => console.error('⚠️ Uncaught Exception:', err.message));
@@ -393,7 +394,7 @@ async function extractGuardianPhone(jid, msg) {
 // 🔎 नंबर डेटाबेस में चेक करो और पूरा डेटा वापस लो
 async function checkRegisteredNumber(phone) {
     try {
-        const url = `${GOOGLE_SCRIPT_URL}?action=check_user&phone=${phone}`;
+        const url = `${GOOGLE_SCRIPT_URL}?action=check_user&phone=${phone}&token=${GAS_TOKEN}`;
         const r = await axios.get(url, { timeout: 12000 });
         console.log(`🔎 check_user [${phone}] ->`, JSON.stringify(r.data));
         if (r.data && (r.data.role === 'teacher' || r.data.role === 'guardian')) {
@@ -413,7 +414,7 @@ async function sendTeacherAttendanceSummary(jid, phone, month, year, monthName) 
     try {
         await sendReply(jid, `⏳ माह *${monthName} (${year})* की उपस्थिति रिपोर्ट निकाली जा रही है, कृपया प्रतीक्षा करें...`);
 
-        const url = `${GOOGLE_SCRIPT_URL}?action=get_teacher_attendance&phone=${phone}&month=${month}&year=${year}`;
+        const url = `${GOOGLE_SCRIPT_URL}?action=get_teacher_attendance&phone=${phone}&month=${month}&year=${year}&token=${GAS_TOKEN}`;
         const res = await axios.get(url, { timeout: 15000 });
         const resData = res.data;
 
