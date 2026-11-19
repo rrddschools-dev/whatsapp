@@ -1427,6 +1427,7 @@ async function processQueue() {
                         await new Promise(res => setTimeout(res, 1200));
                         await sendFeeReminderPdf(jid, item);
                     }
+                        }
 
                 // 🎯 B. NEW ADMISSION & CLASS PROMOTION CONFIRMATION
                 else if (item.type === 'ADMISSION_CONFIRMATION' || item.type === 'PROMOTION_CONFIRMATION' || item.type === 'ADMISSION' || item.action === 'ADMISSION_NOTIFICATION' || item.action === 'addNewAdmission') {
