@@ -1389,6 +1389,11 @@ async function processQueue() {
     isProcessingQueue = true;
 
     while (messageQueue.length > 0) {
+     if (!sock || !isBotReady) {
+            console.log('⏳ बॉट रीकनेक्ट हो रहा है, 5 सेकंड बाद पुनः प्रयास...');
+            await new Promise(res => setTimeout(res, 5000));
+            continue;
+        }       
         const item = messageQueue[0];
         try {
             let formattedNumber = item.number.toString().replace(/[^0-9]/g, '');
@@ -1397,37 +1402,47 @@ async function processQueue() {
 
             if (sock && (isBotReady || sock.user)) {
 
-                // 🎯 A. FEE REMINDER & STRUCTURE COMBO
-                if (item.type === 'FEE_REMINDER_COMBO' || item.type === 'FEE_STRUCTURE_COMBO') {
-                    const voiceScript = (item.voiceText && item.voiceText.trim().length > 0)
-                        ? item.voiceText
-                        : `नमस्कार! प्रिय अभिभावक, जे आर डी पब्लिक स्कूल मरुई से विनम्र निवेदन है। आपके बच्चे ${item.studentName || ''} की फीस ${item.totalAmount || 0} रुपये अभी बकाया है। कृपया इसे शीघ्र जमा करने का कष्ट करें। धन्यवाद!`;
+               // 🎯 A. FEE REMINDER & STRUCTURE COMBO (5 सेकंड गैप + Recording/Typing + QR Fail-Safe)
+                if (item.type === 'FEE_REMINDER_COMBO' || item.type === 'FEE_STRUCTURE_COMBO') {
+                    const voiceScript = (item.voiceText && item.voiceText.trim().length > 0)
+                        ? item.voiceText
+                        : `नमस्कार! प्रिय अभिभावक, जे आर डी पब्लिक स्कूल मरुई से विनम्र निवेदन है। आपके बच्चे ${item.studentName || ''} की फीस ${item.totalAmount || 0} रुपये अभी बकाया है। कृपया इसे शीघ्र जमा करने का कष्ट करें। धन्यवाद!`;
 
-                    const audioBuffer = await generateHindiVoiceNote(voiceScript);
-                    if (audioBuffer) {
-                        await sock.sendMessage(jid, { audio: audioBuffer, mimetype: 'audio/ogg; codecs=opus', ptt: true });
-                    }
+                    // 1️⃣ हिंदी वॉइस नोट (Recording इंडिकेटर के साथ)
+                    try { await sock.sendPresenceUpdate('recording', jid); } catch (e) {}
+                    const audioBuffer = await generateHindiVoiceNote(voiceScript);
+                    try { await sock.sendPresenceUpdate('paused', jid); } catch (e) {}
 
-                                       await new Promise(res => setTimeout(res, 1500));
+                    if (audioBuffer) {
+                        await sock.sendMessage(jid, { audio: audioBuffer, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+                        // ⏱️ उसी बच्चे के अगले मैसेज से पहले कुल 5 सेकंड का गैप (3s रुककर + 2s typing)
+                        await new Promise(res => setTimeout(res, 3000));
+                        try { await sock.sendPresenceUpdate('composing', jid); } catch (e) {}
+                        await new Promise(res => setTimeout(res, 2000));
+                        try { await sock.sendPresenceUpdate('paused', jid); } catch (e) {}
+                    }
 
+                    // 2️⃣ QR इमेज के कैप्शन में पूरा हिसाब व /pay लिंक (फेल-सेफ सुरक्षा के साथ)
                     if (item.type === 'FEE_REMINDER_COMBO' && item.qrUrl) {
                         const cap = item.message || '';
-                        if (cap.length <= 1000) {
-                            // ✅ सिर्फ 1 मैसेज: QR फोटो + कैप्शन में पूरा हिसाब व लिंक
-                            await sock.sendMessage(jid, { image: { url: item.qrUrl }, caption: cap });
-                        } else {
-                            // कैप्शन बहुत लंबा हो तो (बहुत सारे महीने बकाया) टेक्स्ट अलग + QR
-                            await sock.sendMessage(jid, { text: cap });
-                            await new Promise(res => setTimeout(res, 1200));
-                            await sock.sendMessage(jid, { image: { url: item.qrUrl }, caption: '📲 फीस जमा करने हेतु QR स्कैन करें' });
+                        try {
+                            if (cap.length <= 1000) {
+                                await sock.sendMessage(jid, { image: { url: item.qrUrl }, caption: cap });
+                            } else {
+                                await sock.sendMessage(jid, { text: cap });
+                                await new Promise(res => setTimeout(res, 5000));
+                                await sock.sendMessage(jid, { image: { url: item.qrUrl }, caption: '📲 फीस जमा करने हेतु QR स्कैन करें' });
+                            }
+                        } catch (qrErr) {
+                            console.error('⚠️ QR इमेज फेल, टेक्स्ट रिमाइंडर भेजा जा रहा है:', qrErr.message);
+                            if (cap) await sock.sendMessage(jid, { text: cap });
                         }
                     } else {
-                        // FEE_STRUCTURE_COMBO जैसा पहले था वैसा ही
                         if (item.message) await sock.sendMessage(jid, { text: item.message });
-                        await new Promise(res => setTimeout(res, 1200));
+                        await new Promise(res => setTimeout(res, 5000));
                         await sendFeeReminderPdf(jid, item);
                     }
-                        }
+                }
 
                 // 🎯 B. NEW ADMISSION & CLASS PROMOTION CONFIRMATION
                 else if (item.type === 'ADMISSION_CONFIRMATION' || item.type === 'PROMOTION_CONFIRMATION' || item.type === 'ADMISSION' || item.action === 'ADMISSION_NOTIFICATION' || item.action === 'addNewAdmission') {
@@ -1775,12 +1790,15 @@ else if (item.type === 'ATTENDANCE_ALERT' || item.type === 'SUBJECT_MARKS_ALERT'
             console.error(`❌ [त्रुटि] ऑटो संदेश विफल (${item.number}):`, err.message);
         } finally {
             messageQueue.shift();
-            // 🎯 WhatsApp बैन से सुरक्षा: 8 से 14 सेकंड का रैंडम मानवीय अंतराल
-            if (messageQueue.length > 0) {
-                const waitTime = Math.floor(Math.random() * (14000 - 8000 + 1)) + 8000;
-                console.log(`⏱️ अगला संदेश ${Math.round(waitTime / 1000)} सेकंड बाद भेजा जाएगा... (पेंडिंग: ${messageQueue.length})`);
-                await new Promise(res => setTimeout(res, waitTime));
-            }
+            // 🎯 स्मार्ट Anti-Ban गैप: फीस रिमाइंडर 45–60 सेकंड | अटेंडेंस व बाकी अलर्ट 20–30 सेकंड
+            if (messageQueue.length > 0) {
+                const isFeeReminder = (item.type === 'FEE_REMINDER_COMBO');
+                const minDelay = isFeeReminder ? 45000 : 20000;
+                const maxDelay = isFeeReminder ? 60000 : 30000;
+                const waitTime = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+                console.log(`⏱️ [${item.type}] पूरा। अगला संदेश ${Math.round(waitTime / 1000)} सेकंड बाद... (पेंडिंग: ${messageQueue.length})`);
+                await new Promise(res => setTimeout(res, waitTime));
+            }
         }
     } // while (messageQueue.length > 0) बंद
     isProcessingQueue = false;
@@ -2012,6 +2030,15 @@ app.get('/pay', (req, res) => {
         '<h3>' + esc(req.query.pn) + '</h3><p>Fees: ₹' + am + '</p>' +
         '<a href="' + esc(upi) + '" style="display:inline-block;padding:14px 28px;background:#16a34a;color:#fff;border-radius:8px;text-decoration:none;font-size:18px">UPI se pay karein</a>' +
         '<script>location.href=' + JSON.stringify(upi).replace(/</g, '\\u003c') + '</script></body>');
+});
+// 📊 लाइव क्यू मॉनिटर (/queue-status खोलकर देखें कितने मैसेज बाकी हैं)
+app.get('/queue-status', (req, res) => {
+    res.json({
+        bot_ready: isBotReady,
+        processing: isProcessingQueue,
+        pending_count: messageQueue.length,
+        next_student: messageQueue[0] ? (messageQueue[0].studentName || messageQueue[0].name || messageQueue[0].number) : 'None'
+    });
 });
 app.get('/', (req, res) => {
     res.send(`JRD WhatsApp Bot Status: ${isBotReady ? 'Connected ✅' : 'Waiting for QR scan ⏳'}`);
