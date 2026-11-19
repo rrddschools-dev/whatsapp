@@ -1408,19 +1408,25 @@ async function processQueue() {
                         await sock.sendMessage(jid, { audio: audioBuffer, mimetype: 'audio/ogg; codecs=opus', ptt: true });
                     }
 
-                    if (item.message) await sock.sendMessage(jid, { text: item.message });
-                    await new Promise(res => setTimeout(res, 1500));
+                                       await new Promise(res => setTimeout(res, 1500));
 
-                    if (item.qrUrl) {
-                        await sock.sendMessage(jid, {
-                            image: { url: item.qrUrl },
-                            caption: `📲 *1-Click Direct Fee Payment Link:*\n${item.upiLink || ''}\n\n*(स्कैन करने हेतु इस QR कोड को गैलरी में सेव कर सकते हैं)*`
-                        });
-                    }
-
-                    await new Promise(res => setTimeout(res, 1200));
-                    await sendFeeReminderPdf(jid, item);
-                }
+                    if (item.type === 'FEE_REMINDER_COMBO' && item.qrUrl) {
+                        const cap = item.message || '';
+                        if (cap.length <= 1000) {
+                            // ✅ सिर्फ 1 मैसेज: QR फोटो + कैप्शन में पूरा हिसाब व लिंक
+                            await sock.sendMessage(jid, { image: { url: item.qrUrl }, caption: cap });
+                        } else {
+                            // कैप्शन बहुत लंबा हो तो (बहुत सारे महीने बकाया) टेक्स्ट अलग + QR
+                            await sock.sendMessage(jid, { text: cap });
+                            await new Promise(res => setTimeout(res, 1200));
+                            await sock.sendMessage(jid, { image: { url: item.qrUrl }, caption: '📲 फीस जमा करने हेतु QR स्कैन करें' });
+                        }
+                    } else {
+                        // FEE_STRUCTURE_COMBO जैसा पहले था वैसा ही
+                        if (item.message) await sock.sendMessage(jid, { text: item.message });
+                        await new Promise(res => setTimeout(res, 1200));
+                        await sendFeeReminderPdf(jid, item);
+                    }
 
                 // 🎯 B. NEW ADMISSION & CLASS PROMOTION CONFIRMATION
                 else if (item.type === 'ADMISSION_CONFIRMATION' || item.type === 'PROMOTION_CONFIRMATION' || item.type === 'ADMISSION' || item.action === 'ADMISSION_NOTIFICATION' || item.action === 'addNewAdmission') {
@@ -1992,6 +1998,19 @@ app.get('/test-voice', async (req, res) => {
         log('❌ FAIL: ' + e.message);
     }
     res.json(out);
+});
+// 💳 UPI पेमेंट रीडायरेक्ट पेज (WhatsApp लिंक -> UPI ऐप)
+app.get('/pay', (req, res) => {
+    const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const am = Math.max(1, parseInt(req.query.am, 10) || 1);
+    const upi = 'upi://pay?pa=' + encodeURIComponent(req.query.pa || '') +
+                '&pn=' + encodeURIComponent(req.query.pn || '') +
+                '&am=' + am + '&cu=INR&tn=' + encodeURIComponent(req.query.tn || '');
+    res.send('<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">' +
+        '<body style="font-family:sans-serif;text-align:center;padding:40px">' +
+        '<h3>' + esc(req.query.pn) + '</h3><p>Fees: ₹' + am + '</p>' +
+        '<a href="' + esc(upi) + '" style="display:inline-block;padding:14px 28px;background:#16a34a;color:#fff;border-radius:8px;text-decoration:none;font-size:18px">UPI se pay karein</a>' +
+        '<script>location.href=' + JSON.stringify(upi).replace(/</g, '\\u003c') + '</script></body>');
 });
 app.get('/', (req, res) => {
     res.send(`JRD WhatsApp Bot Status: ${isBotReady ? 'Connected ✅' : 'Waiting for QR scan ⏳'}`);
