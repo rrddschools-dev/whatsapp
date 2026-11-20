@@ -308,8 +308,7 @@ const messageCache = new Map();
 const pausedChats = new Map(); // ⏸️ STOP किए गए नंबरों का अस्थायी लॉक
 const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
 const GROQ_STT_MODEL = (process.env.GROQ_STT_MODEL || "whisper-large-v3-turbo").trim();
-const GROQ_MODELS = [(process.env.GROQ_MODEL || "llama-3.3-70b-versatile").trim(), "llama-3.1-8b-instant"]
-    .filter((m, i, a) => m && a.indexOf(m) === i);
+const GROQ_MODELS = [(process.env.GROQ_MODEL || "llama-3.3-70b-versatile").trim()];    .filter((m, i, a) => m && a.indexOf(m) === i);
 
 const AI_GROUP_FILE = path.join(__dirname, 'ai_group_jid.json');
 let aiGroupJid = (process.env.AI_GROUP_JID || '').trim();
@@ -453,10 +452,26 @@ async function transcribeHindiAudioGroq(audioBase64) {
     if (!res.ok) throw new Error(data?.error?.message || 'Whisper transcription failed');
     return (data.text || '').trim();
 }
-
+async function getAvailableGroqModels_() {
+    const list = [...GROQ_MODELS];
+    try {
+        const r = await axios.get('https://api.groq.com/openai/v1/models', {
+            headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
+            timeout: 10000
+        });
+        const ids = (r.data?.data || [])
+            .map(m => m.id)
+            .filter(id => id && !/whisper|guard|audio|tts|embed|vision/i.test(id));
+        for (const id of ids) {
+            if (!list.includes(id)) list.push(id);
+        }
+    } catch (e) {}
+    return list;
+}
 async function groqChatPost(messages) {
     let lastErr;
-    for (const model of GROQ_MODELS) {
+    const models = await getAvailableGroqModels_();
+    for (const model of models) {
         for (let attempt = 1; attempt <= 2; attempt++) {
             try {
                 return await axios.post('https://api.groq.com/openai/v1/chat/completions', {
