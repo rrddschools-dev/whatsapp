@@ -635,6 +635,237 @@ async function askJrdAiBrain(userText, audioBase64 = null) {
         return `⚠️ AI सेवा त्रुटि: ${detail}`;
     }
 }
+// =========================================================================
+// 🛡️ JRD SECURE GUARDIAN AI ENGINE (5-LAYER ZERO-TRUST + LEAK-FREE)
+// =========================================================================
+const GUARDIAN_DAILY_LIMIT = 10; // हर गार्जियन नंबर पर रोज़ाना अधिकतम 10 AI सवाल
+const guardianQuotaMap = new Map(); // key: phone -> { date, count }
+const guardianBusySet = new Set();  // हर गार्जियन का अलग Anti-Race लॉक
+
+const GUARDIAN_AI_TOOLS = [
+    {
+        type: "function",
+        function: {
+            name: "get_my_child_fees",
+            description: "Get live fee status, paid list, due list, and UPI payment link ONLY for the guardian's own registered child(ren).",
+            parameters: {
+                type: "object",
+                properties: {
+                    enrolment: { type: "string", description: "Optional enrolment of one of the guardian's registered children" }
+                }
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_my_child_attendance",
+            description: "Get today's and recent attendance records ONLY for the guardian's own registered child(ren).",
+            parameters: {
+                type: "object",
+                properties: {
+                    enrolment: { type: "string", description: "Optional enrolment of one of the guardian's registered children" }
+                }
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_my_child_login",
+            description: "Get student portal login ID (enrolment), password, and portal link ONLY for the guardian's own registered child(ren).",
+            parameters: { type: "object", properties: {} }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_school_info",
+            description: "Get J.R.D. Public School timings, address/location, admission info, and official portal/app link.",
+            parameters: { type: "object", properties: {} }
+        }
+    }
+];
+
+function checkGuardianQuota_(phone) {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const rec = guardianQuotaMap.get(phone);
+    if (!rec || rec.date !== today) {
+        guardianQuotaMap.set(phone, { date: today, count: 1 });
+        return true;
+    }
+    if (rec.count >= GUARDIAN_DAILY_LIMIT) return false;
+    rec.count += 1;
+    return true;
+}
+
+// 🔒 Layer 1 & 2: Server-Side Whitelist Lock (AI कभी किसी दूसरे बच्चे का Enrolment पास नहीं कर सकता)
+async function runGuardianSecureTool(name, args, senderPhone, registeredStudents) {
+    try {
+        const allowedList = Array.isArray(registeredStudents) ? registeredStudents : [];
+        if (allowedList.length === 0 && name !== 'get_school_info') {
+            return { status: 'error', message: 'आपके नंबर से कोई छात्र पंजीकृत नहीं है।' };
+        }
+
+        // केवल उसी के रजिस्टर्ड बच्चों में से फ़िल्टर करें (अगर AI कोई बाहर का enrolment भेजे तो इग्नोर होगा)
+        const reqEnr = String(args?.enrolment || '').trim().toLowerCase();
+        let targetStudents = allowedList;
+        if (reqEnr) {
+            const matched = allowedList.filter(s => String(s.enrolment || '').trim().toLowerCase() === reqEnr);
+            if (matched.length > 0) targetStudents = matched;
+        }
+
+        if (name === 'get_my_child_fees') {
+            const results = [];
+            for (const st of targetStudents) {
+                const rq = encodeURIComponent(st.enrolment || st.name || '');
+                const r = await axios.get(`${GOOGLE_SCRIPT_URL}?action=get_student&phone=${senderPhone}&query=${rq}`, { timeout: 15000 });
+                const d = r.data?.data;
+                if (r.data?.status === 'success' && d) {
+                    const payAssets = buildGuardianPaymentAssets(d);
+                    results.push({
+                        name: d.name,
+                        class: d.class,
+                        enrolment: d.enrolment,
+                        total_paid: d.total_paid || 0,
+                        current_due: d.current_due || 0,
+                        old_due: d.old_due || 0,
+                        grand_due: d.grand_due || 0,
+                        due_list: d.due_list || '',
+                        pay_link: payAssets ? payAssets.payLink : ''
+                    });
+                }
+            }
+            return { status: 'success', children_fees: results };
+        }
+
+        if (name === 'get_my_child_attendance') {
+            const results = [];
+            for (const st of targetStudents) {
+                const enr = String(st.enrolment || '').trim();
+                if (!enr) continue;
+                const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=student_attendance&token=${GAS_TOKEN}&q=${encodeURIComponent(enr)}`;
+                const r = await axios.get(url, { timeout: 15000 });
+                results.push({
+                    name: st.name,
+                    class: st.class,
+                    enrolment: enr,
+                    summary: r.data?.summary || {},
+                    recent_records: (r.data?.records || []).slice(0, 7)
+                });
+            }
+            return { status: 'success', children_attendance: results };
+        }
+
+        if (name === 'get_my_child_login') {
+            return {
+                status: 'success',
+                portal_url: 'https://jrdschool.online/studentdemo.html',
+                logins: targetStudents.map(st => ({
+                    name: st.name,
+                    class: st.class,
+                    login_id: st.enrolment,
+                    password: st.password || 'jrd123'
+                }))
+            };
+        }
+
+        if (name === 'get_school_info') {
+            return {
+                school: 'J.R.D. Public School, मरुई, चोलापुर, वाराणसी (उ.प्र.) - 221208',
+                timings: 'प्रातः 07:30 AM से दोपहर 01:30 PM तक (सोमवार से शनिवार)',
+                portal: 'https://jrdschool.online/studentdemo.html',
+                admission: 'सत्र 2026-27 के लिए प्रवेश प्रारंभ है। अधिक जानकारी हेतु विद्यालय कार्यालय में संपर्क करें।'
+            };
+        }
+
+        return { status: 'error', message: 'अनुमति नहीं है।' };
+    } catch (err) {
+        console.error(`⚠️ Guardian Tool [${name}] Error:`, err.message);
+        return { status: 'error', message: 'डेटा प्राप्त करने में अस्थायी समस्या आई।' };
+    }
+}
+
+async function groqGuardianPost(messages) {
+    let lastErr;
+    const models = await getAvailableGroqModels_();
+    for (const model of models) {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                return await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+                    model,
+                    messages,
+                    tools: GUARDIAN_AI_TOOLS,
+                    tool_choice: 'auto',
+                    temperature: 0.2
+                }, {
+                    headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+                    timeout: 25000
+                });
+            } catch (e) {
+                lastErr = e;
+                const code = e.response?.status;
+                if (code === 429 || code === 500 || code === 503) {
+                    await new Promise(r => setTimeout(r, attempt * 2000));
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    throw lastErr;
+}
+
+async function askGuardianSecureAi(userText, audioBase64, senderPhone, registeredStudents) {
+    if (!GROQ_API_KEY) return null;
+
+    let finalQuery = (userText || '').trim();
+    if (audioBase64) {
+        finalQuery = await transcribeHindiAudioGroq(audioBase64);
+        console.log(`🎙️ Guardian Voice [${senderPhone}]: "${finalQuery}"`);
+        if (!finalQuery) return "🙏 आदरणीय अभिभावक जी, आपकी आवाज़ साफ़ सुनाई नहीं दी। कृपया दोबारा बोलें या *1* लिखकर भेजें।";
+    }
+
+    const allowedChildrenText = (registeredStudents || [])
+        .map(s => `${s.name} (Class: ${s.class}, Enrolment: ${s.enrolment})`)
+        .join(', ');
+
+    const systemMsg = {
+        role: "system",
+        content: `तुम J.R.D. Public School, मरुई (वाराणसी) के आधिकारिक अभिभावक हेल्पडेस्क सहायक हो। विनम्र और संक्षिप्त हिंदी में जवाब दो ('आदरणीय अभिभावक जी' कहकर)।
+कड़ा सुरक्षा नियम (ZERO-LEAK):
+1. इस अभिभावक के नंबर से केवल ये विद्यार्थी जुड़े हैं: [${allowedChildrenText}]।
+2. तुम केवल इन्हीं विद्यार्थियों की फीस, उपस्थिति, लॉगिन और स्कूल की सामान्य जानकारी दोगे।
+3. यदि कोई किसी अन्य बच्चे, शिक्षक की सैलरी, स्कूल के कुल कलेक्शन या किसी बाहरी व्यक्ति की जानकारी मांगे, तो विनम्रता से मना कर दो कि सुरक्षा कारणों से केवल आपके पंजीकृत बच्चे की जानकारी ही दी जा सकती है।
+4. बिना टूल चलाए कोई भी फीस या उपस्थिति का अंदाज़ा मत लगाओ।`
+    };
+
+    const workingMessages = [systemMsg, { role: "user", content: finalQuery }];
+
+    for (let step = 0; step < 4; step++) {
+        const res = await groqGuardianPost(workingMessages);
+        const msg = res.data?.choices?.[0]?.message;
+        if (!msg) break;
+        workingMessages.push(msg);
+
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+            for (const tc of msg.tool_calls) {
+                const fnName = tc.function.name;
+                let fnArgs = {};
+                try { fnArgs = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
+                const toolResult = await runGuardianSecureTool(fnName, fnArgs, senderPhone, registeredStudents);
+                workingMessages.push({
+                    role: "tool",
+                    tool_call_id: tc.id,
+                    content: JSON.stringify(toolResult)
+                });
+            }
+            continue;
+        }
+        return (msg.content || '').trim() || "🙏 आदरणीय अभिभावक जी, मुख्य मेन्यू के लिए *Hi* लिखें।";
+    }
+    return "🙏 आदरणीय अभिभावक जी, अभी जानकारी निकालने में समस्या आई। कृपया *1* लिखकर भेजें।";
+}
 const PAUSE_DURATION_MS = 45 * 60 * 1000; // ⏱️ 45 मिनट
 const APK_DOWNLOAD_URL = "https://github.com/आपका-यूजरनेम/रिपॉजिटरी/releases/download/v1.0/JRD_School.apk"; // 📲 असली APK लिंक यहाँ डालें
 const msgRetryCounterCache = new Map();
@@ -1266,7 +1497,7 @@ async function startBot(skipRestore = false) {
 
                 // 🔍 किसी एक खास बच्चे का विवरण देखना (#नाम या Enrolment No. द्वारा)
                 const isGreeting = ['hi', 'hello', 'hii', 'नमस्ते', 'प्रणाम', 'menu', 'start', 'good morning', 'suprabhat', 'जय हिंद', 'ok'].includes(lowerText);
-                const isExactEnrollMatch = registeredStudents.some(st => String(st.enrolment || '').trim().toLowerCase() === lowerText);
+                const isExactEnrollMatch = lowerText.length > 0 && registeredStudents.some(st => String(st.enrolment || '').trim().toLowerCase() === lowerText);
 
                 if (!isGreeting && (rawText.startsWith('#') || isExactEnrollMatch)) {
                     const searchQuery = rawText.replace(/#/g, '').trim();
@@ -1282,7 +1513,49 @@ async function startBot(skipRestore = false) {
                     } catch (e) {}
                     return;
                 }
+           // 🤖 SECURE GUARDIAN AI (Voice Note + Natural Hindi/English Questions)
+                const isGuardianAudio = !!msg.message.audioMessage;
+                const isNoiseMsg = ['ok', 'okay', 'thanks', 'thank you', 'thnx', 'धन्यवाद', 'शुक्रिया', 'ठीक है', 'जी', 'hmm', '👍', '🙏'].includes(lowerText);
+                const shouldRunGuardianAi = GROQ_API_KEY && !isGreeting && !isNoiseMsg && (isGuardianAudio || rawText.length >= 4);
 
+                if (shouldRunGuardianAi) {
+                    if (guardianBusySet.has(jid)) return;
+                    if (!checkGuardianQuota_(senderPhone)) {
+                        await sendReply(jid, `🙏 आदरणीय अभिभावक जी, आज के स्मार्ट AI सवालों की सीमा पूरी हो गई है।\nकृपया सीधे मेन्यू विकल्प **1** (फीस), **2** (लॉगिन ID) या **3-6** का उपयोग करें।`);
+                        return;
+                    }
+
+                    guardianBusySet.add(jid);
+                    try {
+                        try { await sock.sendPresenceUpdate('composing', jid); } catch (e) {}
+                        let gAudioBase64 = null;
+                        if (isGuardianAudio) {
+                            const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                            if (!buf || buf.length < 100) throw new Error('Audio download failed');
+                            gAudioBase64 = buf.toString('base64');
+                        }
+
+                        const gReply = await askGuardianSecureAi(rawText, gAudioBase64, senderPhone, registeredStudents);
+                        try { await sock.sendPresenceUpdate('paused', jid); } catch (e) {}
+
+                        if (gReply) {
+                            await sendReply(jid, gReply);
+                            // 🎙️ अगर गार्जियन ने वॉइस नोट भेजा है, तो Swara की हिंदी वॉइस में भी जवाब दें
+                            if (isGuardianAudio) {
+                                const vBuf = await generateHindiVoiceNote(gReply);
+                                if (vBuf) {
+                                    await new Promise(r => setTimeout(r, 1000));
+                                    await sock.sendMessage(jid, { audio: vBuf, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+                                }
+                            }
+                            return;
+                        }
+                    } catch (gAiErr) {
+                        console.error('❌ Guardian AI Error:', gAiErr.message);
+                    } finally {
+                        setTimeout(() => guardianBusySet.delete(jid), 2000);
+                    }
+                }
                 // 🎯 DEFAULT DYNAMIC GUARDIAN MENU (1 बच्चा या 2+ बच्चों के अनुसार खुद भाषा बदलेगा)
                 const opt1Label = isMultiChild ? 'सभी बच्चों की प्रोफाइल एवं फीस बकाया देखें' : 'बच्चे की प्रोफाइल एवं फीस बकाया देखें';
                 const opt2Label = isMultiChild ? 'सभी बच्चों की लॉगिन ID एवं Password देखें' : 'बच्चे की लॉगिन ID एवं Password देखें';
