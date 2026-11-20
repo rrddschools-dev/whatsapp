@@ -1,5 +1,5 @@
 const makeWASocket = require('@whiskeysockets/baileys').default;
-const { useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const express = require('express');
@@ -305,6 +305,169 @@ app.post('/sync-to-sheet', async (req, res) => {
 });
 const messageCache = new Map();
 const pausedChats = new Map(); // ⏸️ STOP किए गए नंबरों का अस्थायी लॉक
+// 🤖 JRD VIP AI COMMAND CENTER (Enterprise Edition — Gemini 2.5 Flash + Voice-to-Voice)
+const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || "").trim();
+const AI_GROUP_FILE = path.join(__dirname, 'ai_group_jid.json');
+let aiGroupJid = (process.env.AI_GROUP_JID || '').trim();
+try {
+    if (!aiGroupJid && fs.existsSync(AI_GROUP_FILE)) {
+        aiGroupJid = JSON.parse(fs.readFileSync(AI_GROUP_FILE, 'utf8')).jid || '';
+    }
+} catch (e) {}
+
+const botSentIds = new Set();
+let isAiBusy = false; // 🛡️ Anti-Loop & Anti-Race लॉक
+let aiChatHistory = []; // केवल साफ़ टेक्स्ट हिस्ट्री (ऑडियो मेमोरी ब्लोट 0%)
+
+async function sendAiBoxReply(jid, payload) {
+    if (!sock || !isBotReady) return;
+    const sent = await sock.sendMessage(jid, payload);
+    if (sent?.key?.id) {
+        botSentIds.add(sent.key.id);
+        if (botSentIds.size > 200) botSentIds.delete(botSentIds.values().next().value);
+    }
+}
+
+const AI_TOOLS = [{
+    functionDeclarations: [
+        {
+            name: "search_student",
+            description: "Search student profile, enrolment, father name, phone, paid fee and due fee by name or enrolment number.",
+            parameters: {
+                type: "OBJECT",
+                properties: {
+                    query: { type: "STRING", description: "Student name or enrolment number" },
+                    class_name: { type: "STRING", description: "Optional class filter e.g. 8, 10, LKG" }
+                },
+                required: ["query"]
+            }
+        },
+        {
+            name: "get_fee_defaulters",
+            description: "Get list of top fee defaulters in a class or whole school.",
+            parameters: {
+                type: "OBJECT",
+                properties: { class_name: { type: "STRING", description: "Optional class filter" } }
+            }
+        },
+        {
+            name: "get_teacher_attendance",
+            description: "Check today's teacher attendance or a specific teacher's recent attendance/absence.",
+            parameters: {
+                type: "OBJECT",
+                properties: { teacher_name: { type: "STRING", description: "Optional teacher name" } }
+            }
+        },
+        {
+            name: "send_fee_reminder_to_guardian",
+            description: "Queue a WhatsApp fee reminder (Voice + QR) to a student's guardian. Only call when admin explicitly asks to send reminder.",
+            parameters: {
+                type: "OBJECT",
+                properties: {
+                    student_name: { type: "STRING" },
+                    class_name: { type: "STRING" },
+                    enrolment: { type: "STRING" },
+                    phone: { type: "STRING" },
+                    grand_due: { type: "NUMBER" }
+                },
+                required: ["student_name", "phone", "grand_due"]
+            }
+        },
+        {
+            name: "get_bot_status",
+            description: "Get live WhatsApp bot queue status, pending count and failed alerts.",
+            parameters: { type: "OBJECT", properties: {} }
+        }
+    ]
+}];
+
+async function runAiTool(name, args) {
+    try {
+        if (name === 'search_student') {
+            const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=student&token=${GAS_TOKEN}&q=${encodeURIComponent(args.query || '')}&cls=${encodeURIComponent(args.class_name || '')}`;
+            return (await axios.get(url, { timeout: 15000 })).data;
+        }
+        if (name === 'get_fee_defaulters') {
+            const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=defaulters&token=${GAS_TOKEN}&cls=${encodeURIComponent(args.class_name || '')}`;
+            return (await axios.get(url, { timeout: 15000 })).data;
+        }
+        if (name === 'get_teacher_attendance') {
+            const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=teacher_attendance&token=${GAS_TOKEN}&q=${encodeURIComponent(args.teacher_name || '')}`;
+            return (await axios.get(url, { timeout: 15000 })).data;
+        }
+        if (name === 'get_bot_status') {
+            return { bot_ready: isBotReady, pending_queue: messageQueue.length, failed_count: failedAlertsLog.length };
+        }
+        if (name === 'send_fee_reminder_to_guardian') {
+            const dueAmt = Math.round(Number(args.grand_due) || 0);
+            if (dueAmt <= 0) return { status: 'skipped', message: 'बकाया राशि 0 है, रिमाइंडर नहीं भेजा गया।' };
+            const gPhone = normalizeIndianPhone(args.phone);
+            if (!gPhone) return { status: 'error', message: 'अमान्य गार्जियन मोबाइल नंबर' };
+            const payAssets = buildGuardianPaymentAssets({ enrolment: args.enrolment, name: args.student_name, grand_due: dueAmt });
+            const remMsg = `🏫 *J.R.D. PUBLIC SCHOOL, मरुई*\n━━━━━━━━━━━━━━━━━━━━━━━\n👤 *विद्यार्थी:* *${args.student_name}* (${args.class_name || ''})\n🆔 *Enrolment:* \`${args.enrolment || ''}\`\n🚩 *कुल बकाया राशि: ₹${dueAmt}/-*\n📲 *भुगतान लिंक:* ${payAssets ? payAssets.payLink : ''}`;
+            messageQueue.push({
+                number: gPhone, studentName: args.student_name, className: args.class_name || '',
+                totalAmount: dueAmt, message: remMsg, qrUrl: payAssets ? payAssets.qrUrl : '', type: 'FEE_REMINDER_COMBO'
+            });
+            saveQueueToDisk();
+            processQueue();
+            return { status: 'queued', sent_to: gPhone, amount: dueAmt };
+        }
+        return { status: 'error', message: 'Unknown tool' };
+    } catch (toolErr) {
+        console.error(`⚠️ AI Tool [${name}] Error:`, toolErr.message);
+        return { status: 'error', message: toolErr.message };
+    }
+}
+
+async function askJrdAiBrain(userText, audioBase64 = null) {
+    if (!GEMINI_API_KEY) return "⚠️ सर्वर में GEMINI_API_KEY सेट नहीं है। कृपया suga.app Environment Variables में GEMINI_API_KEY जोड़ें।";
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+    const userParts = audioBase64
+        ? [
+            { inlineData: { mimeType: "audio/ogg", data: audioBase64 } },
+            { text: "यह स्कूल डायरेक्टर का हिंदी वॉइस सवाल है। इसे सुनकर सही टूल से डेटा निकालें और संक्षिप्त हिंदी में जवाब दें।" }
+          ]
+        : [{ text: userText }];
+
+    // 🎯 सुरक्षित वर्किंग कॉपी (एरर आने या लंबी चैट होने पर हिस्ट्री कभी क्रैश नहीं होगी)
+    const workingContents = [...aiChatHistory, { role: "user", parts: userParts }];
+    const systemInstruction = {
+        parts: [{ text: "तुम J.R.D. Public School, Marui के Director (सर्वेश सर) के पर्सनल AI सेक्रेटरी हो। हमेशा संक्षिप्त, सटीक और आदरपूर्ण हिंदी में जवाब दो ('सर' कहकर संबोधित करो)। बिना डेटा देखे अंदाज़ा मत लगाओ — हमेशा दिए गए tools का इस्तेमाल करो।" }]
+    };
+
+    try {
+        for (let step = 0; step < 5; step++) {
+            const res = await axios.post(endpoint, { systemInstruction, contents: workingContents, tools: AI_TOOLS }, { timeout: 25000 });
+            const cand = res.data?.candidates?.[0]?.content;
+            if (!cand || !cand.parts) break;
+            workingContents.push(cand);
+
+            const fnCall = cand.parts.find(p => p.functionCall);
+            if (fnCall) {
+                const { name, args } = fnCall.functionCall;
+                const toolResult = await runAiTool(name, args || {});
+                workingContents.push({ role: "user", parts: [{ functionResponse: { name, response: { result: toolResult } } }] });
+                continue;
+            }
+
+            const replyText = cand.parts.map(p => p.text || '').join('\n').trim() || "जी सर, कार्य पूर्ण हुआ।";
+
+            // ✅ हमेशा साफ़ user -> model जोड़ी में सेव करें (कभी 400 Bad Request नहीं आएगा)
+            aiChatHistory.push({ role: "user", parts: [{ text: userText || "[Voice Query]" }] });
+            aiChatHistory.push({ role: "model", parts: [{ text: replyText }] });
+            if (aiChatHistory.length > 8) aiChatHistory = aiChatHistory.slice(-8);
+
+            return replyText;
+        }
+        return "⚠️ अभी उत्तर तैयार करने में समस्या आई, कृपया दोबारा पूछें।";
+    } catch (apiErr) {
+        const detail = apiErr.response?.data?.error?.message || apiErr.message;
+        console.error('❌ Gemini API Error:', detail);
+        return `⚠️ AI सेवा त्रुटि: ${detail}`;
+    }
+}
 const PAUSE_DURATION_MS = 45 * 60 * 1000; // ⏱️ 45 मिनट
 const APK_DOWNLOAD_URL = "https://github.com/आपका-यूजरनेम/रिपॉजिटरी/releases/download/v1.0/JRD_School.apk"; // 📲 असली APK लिंक यहाँ डालें
 const msgRetryCounterCache = new Map();
@@ -522,11 +685,65 @@ async function startBot() {
             if (!msg.message) return;
 
             const jid = msg.key.remoteJid;
-            if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') return;
+            if (!jid || jid === 'status@broadcast') return;
+            if (botSentIds.has(msg.key.id)) return; // खुद के रिप्लाई पर लूप रोकें
 
             const rawText = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
             const lowerText = rawText.toLowerCase();
 
+           // 🤖 JRD AI COMMAND CENTER (Private Group: Text + Voice Note दोनों समझेगा)
+            if (jid.endsWith('@g.us')) {
+                if (msg.key.fromMe && lowerText === '!setup-ai') {
+                    aiGroupJid = jid;
+                    try { fs.writeFileSync(AI_GROUP_FILE, JSON.stringify({ jid })); } catch (e) {}
+                    console.log('🤖 AI_GROUP_JID:', jid);
+                    await sendAiBoxReply(jid, {
+                        text: `🤖 *JRD AI COMMAND CENTER सक्रिय हो गया!*\n━━━━━━━━━━━━━━━━━━━━━━━\n📌 *स्थायी सेटअप (suga.app Variables में सेव करें):*\n\`AI_GROUP_JID\` = \`${jid}\`\n\nसर, अब आप यहाँ **बोलकर (Voice Note)** या **लिखकर** कुछ भी पूछ सकते हैं:\n• _"कक्षा 8 के रोहन की कितनी फीस बाकी है?"_\n• _"इसके गार्जियन को रिमाइंडर भेज दो"_\n• _"कक्षा 10 के सबसे बड़े बकायादार बताओ"_\n• _"आज कौन से टीचर आए हैं?"_\n• चैट मेमोरी रीसेट करने हेतु: \`!reset-ai\``
+                    });
+                    return;
+                }
+
+                if (!aiGroupJid || jid !== aiGroupJid) return;
+
+                // 🛡️ Anti-Loop & Anti-Race सुरक्षा (बॉट खुद की वॉइस या टेक्स्ट पर कभी नहीं बोलेगा)
+                if (isAiBusy || rawText.startsWith('🤖 *JRD AI') || rawText.startsWith('⚠️ AI')) return;
+
+                if (lowerText === '!reset-ai') {
+                    aiChatHistory = [];
+                    await sendAiBoxReply(jid, { text: `🤖 *JRD AI:*\n✅ चैट मेमोरी साफ़ कर दी गई है सर। नया सवाल पूछें।` });
+                    return;
+                }
+
+                const isAudio = !!msg.message.audioMessage;
+                if (!rawText && !isAudio) return;
+
+                isAiBusy = true;
+                try {
+                    try { await sock.sendPresenceUpdate('composing', jid); } catch (e) {}
+                    let audioBase64 = null;
+                    if (isAudio) {
+                        const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                        if (!buf || buf.length < 100) throw new Error('वॉइस नोट डाउनलोड नहीं हो सका');
+                        audioBase64 = buf.toString('base64');
+                    }
+
+                    const aiReply = await askJrdAiBrain(rawText, audioBase64);
+                    try { await sock.sendPresenceUpdate('paused', jid); } catch (e) {}
+                    await sendAiBoxReply(jid, { text: `🤖 *JRD AI:*\n${aiReply}` });
+
+                    const voiceBuf = await generateHindiVoiceNote(aiReply);
+                    if (voiceBuf) {
+                        await new Promise(res => setTimeout(res, 1000));
+                        await sendAiBoxReply(jid, { audio: voiceBuf, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+                    }
+                } catch (aiErr) {
+                    console.error('❌ AI Group Handler Error:', aiErr.message);
+                    await sendAiBoxReply(jid, { text: `⚠️ AI त्रुटि: ${aiErr.message}` });
+                } finally {
+                    setTimeout(() => { isAiBusy = false; }, 2000);
+                }
+                return;
+            }
             // 🛑 1. MANAGER STOP / START CONTROL (केवल आपके स्वयं भेजने पर - रजिस्टर्ड व अनरजिस्टर्ड सभी पर लागू)
             if (msg.key.fromMe) {
                 if (lowerText === 'stop') {
