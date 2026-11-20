@@ -903,15 +903,106 @@ async function sendReply(jid, text) {
         console.error('❌ उत्तर भेजने में त्रुटि:', err.message);
     }
 }
+const SCHOOL_UPI_ID = "sarveshverma3590@naviaxis";
+const SCHOOL_PAYEE_NAME = "JRD Public School Marui";
+const BOT_BASE_URL = "https://mp7k2cqazf71-production-noqbsigv.us-central1.suga.run";
 
+function extractDueItemsForVoice_(rawDueText) {
+    if (!rawDueText) return "";
+    const lines = String(rawDueText)
+        .replace(/<br\s*\/?>/gi, "\n")
+        .split("\n")
+        .map(l => l
+            .replace(/[•✅❌⚠️🎉🚩🧾📊💳]/g, " ")
+            .replace(/\(आंशिक बकाया\)|\(बकाया\)|\(आंशिक जमा\)/gi, " ")
+            .replace(/₹/g, " ")
+            .replace(/[*_`]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+        )
+        .filter(l => l.length > 0 && !/सभी फ़ीस जमा|कोई बकाया नहीं/i.test(l));
+
+    return lines.join(", ");
+}
+
+function buildFeeDueVoiceScript_({ studentName, className, grandDue, dueText }) {
+    const sName = String(studentName || "विद्यार्थी").trim();
+    const cName = String(className || "").trim();
+    const classPart = cName ? `, कक्षा ${cName},` : ",";
+    const amt = Math.round(parseFloat(grandDue) || 0);
+
+    if (amt <= 0) {
+        return `नमस्ते! आदरणीय अभिभावक जी, जे आर डी पब्लिक स्कूल मरुई से सादर प्रणाम। आपके प्रिय बच्चे ${sName}${classPart} की कोई फीस बकाया नहीं है। आप एक जागरूक नागरिक हैं और समय पर सहयोग करते हैं, इसके लिए हृदय से धन्यवाद!`;
+    }
+
+    const itemsSpoken = extractDueItemsForVoice_(dueText);
+    const breakdownPart = itemsSpoken ? `जिसमें ${itemsSpoken} शामिल हैं — ` : "";
+
+    return `नमस्ते! आदरणीय अभिभावक जी, जे आर डी पब्लिक स्कूल मरुई से विनम्र निवेदन है। आपके प्रिय बच्चे ${sName}${classPart} की फीस बकाया है, ${breakdownPart}कुल मिलाकर ${amt} रुपये देय हैं। कृपया विद्यालय में सही समय पर फीस जमा करें, क्योंकि आप ही के सहयोग से विद्यालय का वित्तीय संचालन और विकास कार्य आगे बढ़ता है तथा शिक्षकों का समय पर वेतन भी देना होता है। किसी भी जानकारी या व्यवस्था हेतु विद्यालय कार्यालय में संपर्क करें। धन्यवाद!`;
+}
+
+function buildGuardianPaymentAssets(student) {
+    const currentDue = parseFloat(student.current_due) || 0;
+    const oldDue = parseFloat(student.old_due) || 0;
+    const grandDue = Math.round(parseFloat(student.grand_due) || (currentDue + oldDue));
+
+    if (grandDue <= 0) return null;
+
+    const labelPart = `${student.enrolment || ''} ${student.name || 'Fee'}`.trim();
+    const tn = encodeURIComponent(labelPart);
+    const upiLink = `upi://pay?pa=${encodeURIComponent(SCHOOL_UPI_ID)}&pn=${encodeURIComponent(SCHOOL_PAYEE_NAME)}&am=${grandDue}&cu=INR&tn=${tn}`;
+    const payLink = `${BOT_BASE_URL}/pay?pa=${encodeURIComponent(SCHOOL_UPI_ID)}&pn=${encodeURIComponent(SCHOOL_PAYEE_NAME)}&am=${grandDue}&tn=${tn}`;
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiLink)}`;
+
+    return { grandDue, payLink, qrUrl };
+}
 async function sendStudentProfileCard(jid, s) {
     const currentDue = parseFloat(s.current_due) || 0;
     const oldDue     = parseFloat(s.old_due) || 0;
     const grandDue   = parseFloat(s.grand_due) || (currentDue + oldDue);
+    const payAssets  = buildGuardianPaymentAssets(s);
 
-    const replyMsg = `🎓 *STUDENT OFFICIAL PROFILE*\n🏫 *JRD Public School, Marui*\n📅 *सत्र:* ${s.session || '2026-27'}\n━━━━━━━━━━━━━━━━━━━━━━━\n🆔 *Enrolment No:* \`${s.enrolment || 'N/A'}\` \n📜 *Scholar No:* ${s.scholar_no || 'N/A'}\n🔢 *Roll No:* ${s.roll_no || 'N/A'}\n\n👤 *छात्र का नाम:* *${s.name}*\n👨‍👦 *पिता का नाम:* ${s.father}\n👩‍👦 *माता का नाम:* ${s.mother}\n🏫 *कक्षा:* ${s.class} (${s.type || 'REGULAR'})\n\n💰 *कुल जमा शुल्क:* ₹${s.total_paid || 0}\n\n📊 *जमा विवरण:*\n${s.paid_list || 'कोई जमा रिकॉर्ड दर्ज नहीं है'}\n\n⚠️ *बकाया विवरण:*\n${s.due_list || 'सभी फ़ीस जमा हैं 🎉'}\n\n━━━━━━━━━━━━━━━━━━━━━━━\n🧾 *कुल बकाया ब्रेकडाउन (DUE SUMMARY):*\n• *चालू सत्र बकाया:* ₹${currentDue}\n• *पिछला बकाया (Old Due):* ₹${oldDue}\n---------------------------------------\n🚩 *कुल देय राशि (GRAND TOTAL DUE): ₹${grandDue}*\n━━━━━━━━━━━━━━━━━━━━━━━\n_यदि विवरण में त्रुटि हो, तो विद्यालय कार्यालय में संपर्क करें।_`;
+    const paymentNoticeBlock = grandDue > 0
+        ? `\n🚨 *कृपया जल्द से जल्द फीस को जमा करें।*\n` +
+          `🏢 *किसी भी सहायता या जानकारी हेतु विद्यालय कार्यालय में संपर्क करें।*\n` +
+          (payAssets ? `📲 *ऑनलाइन भुगतान लिंक:* ${payAssets.payLink}\n` : ``)
+        : `\n🎉 *आपके पाल्य की सभी फीस जमा है।*\n` +
+          `🏢 *किसी भी जानकारी हेतु विद्यालय कार्यालय में संपर्क करें।*\n`;
+
+    const replyMsg = `🎓 *STUDENT OFFICIAL PROFILE*\n🏫 *JRD Public School, Marui*\n📅 *सत्र:* ${s.session || '2026-27'}\n━━━━━━━━━━━━━━━━━━━━━━━\n🆔 *Enrolment No:* \`${s.enrolment || 'N/A'}\` \n📜 *Scholar No:* ${s.scholar_no || 'N/A'}\n🔢 *Roll No:* ${s.roll_no || 'N/A'}\n\n👤 *छात्र का नाम:* *${s.name}*\n👨‍👦 *पिता का नाम:* ${s.father}\n👩‍👦 *माता का नाम:* ${s.mother}\n🏫 *कक्षा:* ${s.class} (${s.type || 'REGULAR'})\n\n💰 *कुल जमा शुल्क:* ₹${s.total_paid || 0}\n\n📊 *जमा विवरण:*\n${s.paid_list || 'कोई जमा रिकॉर्ड दर्ज नहीं है'}\n\n⚠️ *बकाया विवरण:*\n${s.due_list || 'सभी फ़ीस जमा हैं 🎉'}\n\n━━━━━━━━━━━━━━━━━━━━━━━\n🧾 *कुल बकाया ब्रेकडाउन (DUE SUMMARY):*\n• *चालू सत्र बकाया:* ₹${currentDue}\n• *पिछला बकाया (Old Due):* ₹${oldDue}\n---------------------------------------\n🚩 *कुल देय राशि (GRAND TOTAL DUE): ₹${grandDue}*\n━━━━━━━━━━━━━━━━━━━━━━━${paymentNoticeBlock}_यदि विवरण में त्रुटि हो, तो विद्यालय कार्यालय में संपर्क करें।_`;
 
     await sendReply(jid, replyMsg);
+
+    if (payAssets && sock && isBotReady) {
+        try {
+            await new Promise(res => setTimeout(res, 1500));
+            await sock.sendMessage(jid, {
+                image: { url: payAssets.qrUrl },
+                caption: `💳 *FEE PAYMENT QR — ${String(s.name || '').toUpperCase()}*\n🚩 *कुल बकाया राशि:* ₹${payAssets.grandDue}/-\n\nकृपया जल्द से जल्द फीस को जमा करें। QR स्कैन करें या ऊपर दिए लिंक से भुगतान करें।\n🏢 *कार्यालय में संपर्क करें।*`
+            });
+        } catch (qrErr) {
+            console.error('⚠️ Profile QR send error:', qrErr.message);
+        }
+    }
+
+    if (sock && isBotReady) {
+        try {
+            await new Promise(res => setTimeout(res, 1500));
+            const voiceScript = buildFeeDueVoiceScript_({
+                studentName: s.name,
+                className: s.class,
+                grandDue: grandDue,
+                dueText: (s.due_list || '') + (oldDue > 0 ? `
+पिछला बकाया ${oldDue} रुपये` : '')
+            });
+            const audioBuffer = await generateHindiVoiceNote(voiceScript);
+            if (audioBuffer) {
+                await sock.sendMessage(jid, { audio: audioBuffer, mimetype: 'audio/ogg; codecs=opus', ptt: true });
+            }
+        } catch (vErr) {
+            console.error('⚠️ Profile voice send error:', vErr.message);
+        }
+    }
 }
 
 // 📄 BRANDED ADMISSION / PROMOTION PDF CERTIFICATE BUILDER
@@ -1463,12 +1554,20 @@ async function processQueue() {
                     if (skipRetry) throw chkErr;
                 }
 
-               // 🎯 A. FEE REMINDER & STRUCTURE COMBO (5 सेकंड गैप + Recording/Typing + QR Fail-Safe)
-                if (item.type === 'FEE_REMINDER_COMBO' || item.type === 'FEE_STRUCTURE_COMBO') {
-                    const voiceScript = (item.voiceText && item.voiceText.trim().length > 0)
-                        ? item.voiceText
-                        : `नमस्कार! प्रिय अभिभावक, जे आर डी पब्लिक स्कूल मरुई से विनम्र निवेदन है। आपके बच्चे ${item.studentName || ''} की फीस ${item.totalAmount || 0} रुपये अभी बकाया है। कृपया इसे शीघ्र जमा करने का कष्ट करें। धन्यवाद!`;
-
+              if (item.type === 'FEE_REMINDER_COMBO' || item.type === 'FEE_STRUCTURE_COMBO') {
+                    let voiceScript = item.voiceText || "";
+                    if (item.type === 'FEE_REMINDER_COMBO') {
+                        const dueBlockMatch = String(item.message || "").match(/\*बकाया विवरण:\*\s*([\s\S]*?)\n━/);
+                        const reminderDueText = dueBlockMatch ? dueBlockMatch[1] : "";
+                        voiceScript = buildFeeDueVoiceScript_({
+                            studentName: item.studentName || item.name || '',
+                            className: item.className || '',
+                            grandDue: item.totalAmount || 0,
+                            dueText: reminderDueText
+                        });
+                    } else if (!voiceScript.trim()) {
+                        voiceScript = `नमस्कार! प्रिय अभिभावक, जे आर डी पब्लिक स्कूल मरुई से विनम्र निवेदन है। आपके बच्चे ${item.studentName || ''} की फीस ${item.totalAmount || 0} रुपये है। धन्यवाद!`;
+                    }
                     // 1️⃣ हिंदी वॉइस नोट (Recording इंडिकेटर के साथ)
                     try { await sock.sendPresenceUpdate('recording', jid); } catch (e) {}
                     const audioBuffer = await generateHindiVoiceNote(voiceScript);
