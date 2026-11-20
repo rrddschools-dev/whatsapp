@@ -306,8 +306,11 @@ app.post('/sync-to-sheet', async (req, res) => {
 });
 const messageCache = new Map();
 const pausedChats = new Map(); // ⏸️ STOP किए गए नंबरों का अस्थायी लॉक
-// 🤖 JRD VIP AI COMMAND CENTER (Enterprise Edition — Gemini 2.5 Flash + Voice-to-Voice)
-const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || "").trim();
+const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
+const GROQ_STT_MODEL = (process.env.GROQ_STT_MODEL || "whisper-large-v3-turbo").trim();
+const GROQ_MODELS = [(process.env.GROQ_MODEL || "llama-3.3-70b-versatile").trim(), "llama-3.1-8b-instant"]
+    .filter((m, i, a) => m && a.indexOf(m) === i);
+
 const AI_GROUP_FILE = path.join(__dirname, 'ai_group_jid.json');
 let aiGroupJid = (process.env.AI_GROUP_JID || '').trim();
 try {
@@ -318,7 +321,7 @@ try {
 
 const botSentIds = new Set();
 let isAiBusy = false; // 🛡️ Anti-Loop & Anti-Race लॉक
-let aiChatHistory = []; // केवल साफ़ टेक्स्ट हिस्ट्री (ऑडियो मेमोरी ब्लोट 0%)
+let aiChatHistory = []; // केवल साफ़ टेक्स्ट हिस्ट्री
 
 async function sendAiBoxReply(jid, payload) {
     if (!sock || !isBotReady) return;
@@ -329,58 +332,71 @@ async function sendAiBoxReply(jid, payload) {
     }
 }
 
-const AI_TOOLS = [{
-    functionDeclarations: [
-        {
+const AI_TOOLS = [
+    {
+        type: "function",
+        function: {
             name: "search_student",
             description: "Search student profile, enrolment, father name, phone, paid fee and due fee by name or enrolment number.",
             parameters: {
-                type: "OBJECT",
+                type: "object",
                 properties: {
-                    query: { type: "STRING", description: "Student name or enrolment number" },
-                    class_name: { type: "STRING", description: "Optional class filter e.g. 8, 10, LKG" }
+                    query: { type: "string", description: "Student name or enrolment number" },
+                    class_name: { type: "string", description: "Optional class filter e.g. 8, 10, LKG" }
                 },
                 required: ["query"]
             }
-        },
-        {
+        }
+    },
+    {
+        type: "function",
+        function: {
             name: "get_fee_defaulters",
             description: "Get list of top fee defaulters in a class or whole school.",
             parameters: {
-                type: "OBJECT",
-                properties: { class_name: { type: "STRING", description: "Optional class filter" } }
+                type: "object",
+                properties: { class_name: { type: "string", description: "Optional class filter" } }
             }
-        },
-        {
+        }
+    },
+    {
+        type: "function",
+        function: {
             name: "get_teacher_attendance",
             description: "Check today's teacher attendance or a specific teacher's recent attendance/absence.",
             parameters: {
-                type: "OBJECT",
-                properties: { teacher_name: { type: "STRING", description: "Optional teacher name" } }
+                type: "object",
+                properties: { teacher_name: { type: "string", description: "Optional teacher name" } }
             }
-        },
-        {
+        }
+    },
+    {
+        type: "function",
+        function: {
             name: "send_fee_reminder_to_guardian",
             description: "Queue a WhatsApp fee reminder (Voice + QR) to a student's guardian. Only call when admin explicitly asks to send reminder.",
             parameters: {
-                type: "OBJECT",
+                type: "object",
                 properties: {
-                    student_name: { type: "STRING" },
-                    class_name: { type: "STRING" },
-                    enrolment: { type: "STRING" },
-                    phone: { type: "STRING" },
-                    grand_due: { type: "NUMBER" }
+                    student_name: { type: "string" },
+                    class_name: { type: "string" },
+                    enrolment: { type: "string" },
+                    phone: { type: "string" },
+                    grand_due: { type: "number" }
                 },
                 required: ["student_name", "phone", "grand_due"]
             }
-        },
-               {
+        }
+    },
+    {
+        type: "function",
+        function: {
             name: "get_bot_status",
             description: "Get live WhatsApp bot queue status, pending count and failed alerts.",
-            parameters: { type: "OBJECT", properties: { note: { type: "STRING", description: "unused" } } }
+            parameters: { type: "object", properties: {} }
         }
-    ]
-}];
+    }
+];
 
 async function runAiTool(name, args) {
     try {
@@ -420,69 +436,95 @@ async function runAiTool(name, args) {
         return { status: 'error', message: toolErr.message };
     }
 }
-const GEMINI_MODELS = [(process.env.GEMINI_MODEL || "gemini-2.5-flash").trim(), "gemini-2.5-flash-lite"]
-    .filter((m, i, a) => m && a.indexOf(m) === i);
 
-async function geminiPost(body) {
+async function transcribeHindiAudioGroq(audioBase64) {
+    const form = new FormData();
+    const audioBuf = Buffer.from(audioBase64, 'base64');
+    form.append('file', new Blob([audioBuf], { type: 'audio/ogg' }), 'voice.ogg');
+    form.append('model', GROQ_STT_MODEL);
+    form.append('language', 'hi');
+
+    const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
+        body: form
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || 'Whisper transcription failed');
+    return (data.text || '').trim();
+}
+
+async function groqChatPost(messages) {
     let lastErr;
-    for (const model of GEMINI_MODELS) {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-        for (let attempt = 1; attempt <= 3; attempt++) {
+    for (const model of GROQ_MODELS) {
+        for (let attempt = 1; attempt <= 2; attempt++) {
             try {
-                return await axios.post(url, body, { timeout: 25000 });
+                return await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+                    model,
+                    messages,
+                    tools: AI_TOOLS,
+                    tool_choice: 'auto',
+                    temperature: 0.2
+                }, {
+                    headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+                    timeout: 25000
+                });
             } catch (e) {
                 lastErr = e;
                 const code = e.response?.status;
                 if (code === 429 || code === 500 || code === 503) {
-                    await new Promise(r => setTimeout(r, attempt * 2000));   // 2s, 4s, 6s
+                    await new Promise(r => setTimeout(r, attempt * 2000));
                     continue;
                 }
-                break;   // 404/400/403: retry bekaar, agla model try karo
+                break;
             }
         }
     }
     throw lastErr;
 }
+
 async function askJrdAiBrain(userText, audioBase64 = null) {
-    if (!GEMINI_API_KEY) return "⚠️ सर्वर में GEMINI_API_KEY सेट नहीं है। कृपया suga.app Environment Variables में GEMINI_API_KEY जोड़ें।";
-
-    const userParts = audioBase64
-        ? [
-            { inlineData: { mimeType: "audio/ogg", data: audioBase64 } },
-            { text: "यह स्कूल डायरेक्टर का हिंदी वॉइस सवाल है। इसे सुनकर सही टूल से डेटा निकालें और संक्षिप्त हिंदी में जवाब दें।" }
-          ]
-        : [{ text: userText }];
-
-    // 🎯 सुरक्षित वर्किंग कॉपी (एरर आने या लंबी चैट होने पर हिस्ट्री कभी क्रैश नहीं होगी)
-    const workingContents = [...aiChatHistory, { role: "user", parts: userParts }];
-    const systemInstruction = {
-        parts: [{ text: "तुम J.R.D. Public School, Marui के Director (सर्वेश सर) के पर्सनल AI सेक्रेटरी हो। हमेशा संक्षिप्त, सटीक और आदरपूर्ण हिंदी में जवाब दो ('सर' कहकर संबोधित करो)। बिना डेटा देखे अंदाज़ा मत लगाओ — हमेशा दिए गए tools का इस्तेमाल करो।" }]
-    };
+    if (!GROQ_API_KEY) return "⚠️ सर्वर में GROQ_API_KEY सेट नहीं है। कृपया Environment Variables में GROQ_API_KEY जोड़ें।";
 
     try {
-        for (let step = 0; step < 5; step++) {
-            const res = await geminiPost({ systemInstruction, contents: workingContents, tools: AI_TOOLS });
-            const cand = res.data?.candidates?.[0]?.content;
-            if (!cand || !cand.parts) break;
-            workingContents.push(cand);
+        let finalQuery = (userText || '').trim();
+        if (audioBase64) {
+            finalQuery = await transcribeHindiAudioGroq(audioBase64);
+            console.log(`🎙️ Whisper सुना: "${finalQuery}"`);
+            if (!finalQuery) return "⚠️ सर, आपकी आवाज़ साफ़ सुनाई नहीं दी, कृपया दोबारा बोलें।";
+        }
 
-                     const fnCalls = cand.parts.filter(p => p.functionCall);
-            if (fnCalls.length > 0) {
-                const responseParts = [];
-                for (const p of fnCalls) {
-                    const { name, args } = p.functionCall;
-                    const toolResult = await runAiTool(name, args || {});
-                    responseParts.push({ functionResponse: { name, response: { result: toolResult } } });
+        const systemMsg = {
+            role: "system",
+            content: "तुम J.R.D. Public School, Marui के Director (सर्वेश सर) के पर्सनल AI सेक्रेटरी हो। हमेशा संक्षिप्त, सटीक और आदरपूर्ण हिंदी में जवाब दो ('सर' कहकर संबोधित करो)। बिना डेटा देखे अंदाज़ा मत लगाओ — हमेशा दिए गए tools का इस्तेमाल करो।"
+        };
+
+        const workingMessages = [systemMsg, ...aiChatHistory, { role: "user", content: finalQuery }];
+
+        for (let step = 0; step < 5; step++) {
+            const res = await groqChatPost(workingMessages);
+            const msg = res.data?.choices?.[0]?.message;
+            if (!msg) break;
+            workingMessages.push(msg);
+
+            if (msg.tool_calls && msg.tool_calls.length > 0) {
+                for (const tc of msg.tool_calls) {
+                    const fnName = tc.function.name;
+                    let fnArgs = {};
+                    try { fnArgs = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
+                    const toolResult = await runAiTool(fnName, fnArgs);
+                    workingMessages.push({
+                        role: "tool",
+                        tool_call_id: tc.id,
+                        content: JSON.stringify(toolResult)
+                    });
                 }
-                workingContents.push({ role: "user", parts: responseParts });
                 continue;
             }
 
-            const replyText = cand.parts.map(p => p.text || '').join('\n').trim() || "जी सर, कार्य पूर्ण हुआ।";
-
-            // ✅ हमेशा साफ़ user -> model जोड़ी में सेव करें (कभी 400 Bad Request नहीं आएगा)
-            aiChatHistory.push({ role: "user", parts: [{ text: userText || "[Voice Query]" }] });
-            aiChatHistory.push({ role: "model", parts: [{ text: replyText }] });
+            const replyText = (msg.content || '').trim() || "जी सर, कार्य पूर्ण हुआ।";
+            aiChatHistory.push({ role: "user", content: finalQuery });
+            aiChatHistory.push({ role: "assistant", content: replyText });
             if (aiChatHistory.length > 8) aiChatHistory = aiChatHistory.slice(-8);
 
             return replyText;
@@ -490,7 +532,7 @@ async function askJrdAiBrain(userText, audioBase64 = null) {
         return "⚠️ अभी उत्तर तैयार करने में समस्या आई, कृपया दोबारा पूछें।";
     } catch (apiErr) {
         const detail = apiErr.response?.data?.error?.message || apiErr.message;
-        console.error('❌ Gemini API Error:', detail);
+        console.error('❌ Groq API Error:', detail);
         return `⚠️ AI सेवा त्रुटि: ${detail}`;
     }
 }
