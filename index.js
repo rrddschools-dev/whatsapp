@@ -308,7 +308,8 @@ const messageCache = new Map();
 const pausedChats = new Map(); // ⏸️ STOP किए गए नंबरों का अस्थायी लॉक
 const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
 const GROQ_STT_MODEL = (process.env.GROQ_STT_MODEL || "whisper-large-v3-turbo").trim();
-const GROQ_MODELS = [(process.env.GROQ_MODEL || "llama-3.3-70b-versatile").trim()];    .filter((m, i, a) => m && a.indexOf(m) === i);
+const GROQ_MODELS = [(process.env.GROQ_MODEL || "llama-3.3-70b-versatile").trim()]    
+    .filter((m, i, a) => m && a.indexOf(m) === i);
 
 const AI_GROUP_FILE = path.join(__dirname, 'ai_group_jid.json');
 let aiGroupJid = (process.env.AI_GROUP_JID || '').trim();
