@@ -510,11 +510,10 @@ async function askJrdAiBrain(userText, audioBase64 = null) {
             if (!finalQuery) return "⚠️ सर, आपकी आवाज़ साफ़ सुनाई नहीं दी, कृपया दोबारा बोलें।";
         }
 
-        const systemMsg = {
+       const systemMsg = {
             role: "system",
-            content: "तुम J.R.D. Public School, Marui के Director (सर्वेश सर) के पर्सनल AI सेक्रेटरी हो। हमेशा संक्षिप्त, सटीक और आदरपूर्ण हिंदी में जवाब दो ('सर' कहकर संबोधित करो)। बिना डेटा देखे अंदाज़ा मत लगाओ — हमेशा दिए गए tools का इस्तेमाल करो।"
+            content: "तुम J.R.D. Public School, Marui के Director (सर्वेश सर) के पर्सनल AI सेक्रेटरी हो। हमेशा संक्षिप्त, सटीक और आदरपूर्ण हिंदी में जवाब दो ('सर' कहकर संबोधित करो)। बिना डेटा देखे अंदाज़ा मत लगाओ — हमेशा दिए गए tools का इस्तेमाल करो। ज़रूरी नियम: Google Sheet में सभी छात्र और शिक्षक के नाम English में हैं, इसलिए जब भी सर हिंदी में कोई नाम बोलें या लिखें (जैसे 'रोहन वर्मा', 'अमरेश पटेल'), तो tool call में हमेशा उसका शुद्ध English (Roman) नाम भेजो (जैसे 'Rohan Verma', 'Amresh Patel')। class_name में सिर्फ़ नंबर या क्लास नाम भेजो (जैसे '8', '10', 'LKG' — 'Class' या 'कक्षा' मत जोड़ो)। अगर पूरे नाम से 0 रिकॉर्ड आए, तो दोबारा सिर्फ़ पहले नाम (First Name) से search_student ज़रूर चलाओ।"
         };
-
         const workingMessages = [systemMsg, ...aiChatHistory, { role: "user", content: finalQuery }];
 
         for (let step = 0; step < 5; step++) {
