@@ -9,6 +9,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const zlib = require('zlib');
 const ffmpegPath = require('ffmpeg-static');
 const ffmpeg = require('fluent-ffmpeg');
 const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
@@ -373,10 +374,10 @@ const AI_TOOLS = [{
                 required: ["student_name", "phone", "grand_due"]
             }
         },
-        {
+               {
             name: "get_bot_status",
             description: "Get live WhatsApp bot queue status, pending count and failed alerts.",
-            parameters: { type: "OBJECT", properties: {} }
+            parameters: { type: "OBJECT", properties: { note: { type: "STRING", description: "unused" } } }
         }
     ]
 }];
@@ -419,10 +420,31 @@ async function runAiTool(name, args) {
         return { status: 'error', message: toolErr.message };
     }
 }
+const GEMINI_MODELS = [(process.env.GEMINI_MODEL || "gemini-2.5-flash").trim(), "gemini-2.5-flash-lite"]
+    .filter((m, i, a) => m && a.indexOf(m) === i);
 
+async function geminiPost(body) {
+    let lastErr;
+    for (const model of GEMINI_MODELS) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                return await axios.post(url, body, { timeout: 25000 });
+            } catch (e) {
+                lastErr = e;
+                const code = e.response?.status;
+                if (code === 429 || code === 500 || code === 503) {
+                    await new Promise(r => setTimeout(r, attempt * 2000));   // 2s, 4s, 6s
+                    continue;
+                }
+                break;   // 404/400/403: retry bekaar, agla model try karo
+            }
+        }
+    }
+    throw lastErr;
+}
 async function askJrdAiBrain(userText, audioBase64 = null) {
     if (!GEMINI_API_KEY) return "⚠️ सर्वर में GEMINI_API_KEY सेट नहीं है। कृपया suga.app Environment Variables में GEMINI_API_KEY जोड़ें।";
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`;
 
     const userParts = audioBase64
         ? [
@@ -439,16 +461,20 @@ async function askJrdAiBrain(userText, audioBase64 = null) {
 
     try {
         for (let step = 0; step < 5; step++) {
-            const res = await axios.post(endpoint, { systemInstruction, contents: workingContents, tools: AI_TOOLS }, { timeout: 25000 });
+            const res = await geminiPost({ systemInstruction, contents: workingContents, tools: AI_TOOLS });
             const cand = res.data?.candidates?.[0]?.content;
             if (!cand || !cand.parts) break;
             workingContents.push(cand);
 
-            const fnCall = cand.parts.find(p => p.functionCall);
-            if (fnCall) {
-                const { name, args } = fnCall.functionCall;
-                const toolResult = await runAiTool(name, args || {});
-                workingContents.push({ role: "user", parts: [{ functionResponse: { name, response: { result: toolResult } } }] });
+                     const fnCalls = cand.parts.filter(p => p.functionCall);
+            if (fnCalls.length > 0) {
+                const responseParts = [];
+                for (const p of fnCalls) {
+                    const { name, args } = p.functionCall;
+                    const toolResult = await runAiTool(name, args || {});
+                    responseParts.push({ functionResponse: { name, response: { result: toolResult } } });
+                }
+                workingContents.push({ role: "user", parts: responseParts });
                 continue;
             }
 
@@ -492,7 +518,60 @@ function forceClearAuthFolder() {
         console.error('❌ Auth Folder साफ़ करने में त्रुटि:', e.message);
     }
 }
+// ☁️ Google Sheet (AuthBackup) se WhatsApp Session Auto-Restore & Auto-Backup
+let authBackupTimer = null;
 
+async function restoreAuthFromSheet() {
+    try {
+        if (fs.existsSync(path.join(AUTH_FOLDER, 'creds.json'))) return; // Local already hai
+        console.log('☁️ Google Sheet se WhatsApp session restore kiya ja raha hai...');
+        const url = `${GOOGLE_SCRIPT_URL}?action=get_auth_zip&key=SESSION_ZIP_DATA&token=${GAS_TOKEN}`;
+        const res = await axios.get(url, { timeout: 15000 });
+        if (res.data && res.data.status === 'success' && res.data.value) {
+            const jsonStr = zlib.gunzipSync(Buffer.from(res.data.value, 'base64')).toString('utf8');
+            const files = JSON.parse(jsonStr);
+            if (!fs.existsSync(AUTH_FOLDER)) fs.mkdirSync(AUTH_FOLDER, { recursive: true });
+            for (const [fname, content] of Object.entries(files)) {
+                fs.writeFileSync(path.join(AUTH_FOLDER, fname), content, 'utf8');
+            }
+            console.log(`✅ Session restore ho gaya (${Object.keys(files).length} files) — QR scan ki zaroorat nahi!`);
+        } else {
+            console.log('ℹ️ Sheet me koi purana session backup nahi mila, naya QR banega.');
+        }
+    } catch (e) {
+        console.error('⚠️ Session restore error:', e.message);
+    }
+}
+
+function scheduleAuthBackup() {
+    if (authBackupTimer) clearTimeout(authBackupTimer);
+    authBackupTimer = setTimeout(async () => {
+        try {
+            if (!fs.existsSync(path.join(AUTH_FOLDER, 'creds.json'))) return;
+            const files = {};
+            for (const f of fs.readdirSync(AUTH_FOLDER)) {
+                if (f === 'creds.json' || f.startsWith('app-state-sync-key-')) {
+                    files[f] = fs.readFileSync(path.join(AUTH_FOLDER, f), 'utf8');
+                }
+            }
+            let b64 = zlib.gzipSync(Buffer.from(JSON.stringify(files), 'utf8')).toString('base64');
+            // Google Sheet 1 cell limit (50,000 chars) se bachav: agar bada ho to sirf creds.json save karo
+            if (b64.length > 45000) {
+                const onlyCreds = { 'creds.json': files['creds.json'] };
+                b64 = zlib.gzipSync(Buffer.from(JSON.stringify(onlyCreds), 'utf8')).toString('base64');
+            }
+            await axios.post(GOOGLE_SCRIPT_URL, {
+                action: 'save_auth_zip',
+                token: process.env.API_TOKEN || '',
+                key: 'SESSION_ZIP_DATA',
+                value: b64
+            }, { headers: { 'Content-Type': 'application/json' }, timeout: 15000 });
+            console.log(`☁️ WhatsApp session Google Sheet me backup ho gaya (${b64.length} chars)`);
+        } catch (e) {
+            console.error('⚠️ Session backup error:', e.message);
+        }
+    }, 5000);
+}
 function pnJidToIndianMobile(candidate) {
     if (!candidate || typeof candidate !== 'string') return null;
     if (candidate.includes('@lid')) return null;
@@ -613,13 +692,14 @@ async function sendTeacherAttendanceSummary(jid, phone, month, year, monthName) 
         await sendReply(jid, `⚠️ रिपोर्ट प्राप्त करने में तकनीकी समस्या आई है। कृपया थोड़ी देर बाद प्रयास करें।`);
     }
 }
-async function startBot() {
-    if (isConnecting) return;
-    isConnecting = true;
+async function startBot(skipRestore = false) {
+    if (isConnecting) return;
+    isConnecting = true;
 
-    try {
-        console.log('⚡ JRD VIP WhatsApp Bot प्रारंभ हो रहा है...');
-        const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+    try {
+        console.log('⚡ JRD VIP WhatsApp Bot प्रारंभ हो रहा है...');
+        if (!skipRestore) await restoreAuthFromSheet();
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
 
         let latestVersion = [2, 3000, 1017531287];
         try {
@@ -644,7 +724,10 @@ async function startBot() {
             }
         });
 
-        sock.ev.on('creds.update', saveCreds);
+        sock.ev.on('creds.update', async () => {
+            await saveCreds();
+            scheduleAuthBackup();
+        });
 
         sock.ev.on('connection.update', (update) => {
             const { connection, lastDisconnect, qr } = update;
@@ -664,7 +747,7 @@ async function startBot() {
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
                     console.log('❌ सेशन समाप्त। नया सेशन बनाया जा रहा है...');
                     forceClearAuthFolder();
-                    setTimeout(() => startBot(), 1500);
+                    setTimeout(() => startBot(true), 1500);
                 } else {
                     setTimeout(() => startBot(), 2500);
                 }
@@ -679,10 +762,11 @@ async function startBot() {
             }
         });
 
-        sock.ev.on('messages.upsert', async ({ messages, type }) => {
+       sock.ev.on('messages.upsert', async ({ messages, type }) => {
             if (type !== 'notify') return;
-            const msg = messages[0];
-            if (!msg.message) return;
+            for (const msg of messages) {
+                await (async () => {
+                    if (!msg.message) return;
 
             const jid = msg.key.remoteJid;
             if (!jid || jid === 'status@broadcast') return;
@@ -1096,8 +1180,10 @@ async function startBot() {
                     `बच्चे का **नाम (# के साथ)** या **Enrolment No.** लिखकर भेजें _(उदा: *${sampleName}* या *${sampleEnroll}*)_\n\n` +
                     `_आपका नंबर पंजीकृत है ✅_`;
 
-                await sendReply(jid, guardianMenu);
+              await sendReply(jid, guardianMenu);
                 return;
+            }
+                })();
             }
         });
 
@@ -1323,21 +1409,21 @@ async function sendAdmissionOrPromotionPdf(jid, item) {
                 feeY += 18;
             };
 
-            let fs = item.feeStructure || {};
-            let mSingle = parseFloat(fs.monthly_fee || item.monthlyFee || 0);
-            let mTotal = parseFloat(fs.monthly_total || (mSingle * 12) || 0);
+           let feeStruct = item.feeStructure || {};
+            let mSingle = parseFloat(feeStruct.monthly_fee || item.monthlyFee || 0);
+            let mTotal = parseFloat(feeStruct.monthly_total || (mSingle * 12) || 0);
 
-            if (mTotal > 0) addFeeRow(`Tuition Fee (Monthly: Rs.${mSingle} x 12 Months)`, mTotal);
-            addFeeRow('Admission Fee', fs.admission_fee || item.admission_fee);
-            addFeeRow('Registration Fee', fs.registration_fee || item.registration_fee);
-            addFeeRow('Class Change Fee', fs.class_change_fee || item.class_change_fee);
-            addFeeRow('Half Yearly Exam Fee', fs.half_yearly_exam_fee || item.half_yearly_exam_fee);
-            addFeeRow('Annual Exam Fee', fs.annual_exam_fee || item.annual_exam_fee);
-            addFeeRow('Practical Exam Fee', fs.practical_fee || item.practical_fee);
-            addFeeRow('Board Exam Fee', fs.board_fee || item.board_fee);
-            addFeeRow('Admit Card Fee', fs.admit_card_fee || item.admit_card_fee);
+            if (mTotal > 0) addFeeRow(`Tuition Fee (Monthly: Rs.${mSingle} x 12 Months)`, mTotal);
+            addFeeRow('Admission Fee', feeStruct.admission_fee || item.admission_fee);
+            addFeeRow('Registration Fee', feeStruct.registration_fee || item.registration_fee);
+            addFeeRow('Class Change Fee', feeStruct.class_change_fee || item.class_change_fee);
+            addFeeRow('Half Yearly Exam Fee', feeStruct.half_yearly_exam_fee || item.half_yearly_exam_fee);
+            addFeeRow('Annual Exam Fee', feeStruct.annual_exam_fee || item.annual_exam_fee);
+            addFeeRow('Practical Exam Fee', feeStruct.practical_fee || item.practical_fee);
+            addFeeRow('Board Exam Fee', feeStruct.board_fee || item.board_fee);
+            addFeeRow('Admit Card Fee', feeStruct.admit_card_fee || item.admit_card_fee);
 
-            let grandTotalAmt = parseFloat(fs.grand_total || item.totalAmount || totalFeeSum || 0);
+            let grandTotalAmt = parseFloat(feeStruct.grand_total || item.totalAmount || totalFeeSum || 0);
             doc.rect(25, feeY, doc.page.width - 50, 22).fillColor('#E0E7FF').fill();
             doc.fillColor(mainColor).fontSize(10).font('Helvetica-Bold');
             doc.text('TOTAL APPROVED ANNUAL FEE :', 35, feeY + 6);
@@ -1824,20 +1910,20 @@ async function processQueue() {
                 // 🎯 B. NEW ADMISSION & CLASS PROMOTION CONFIRMATION
                 else if (item.type === 'ADMISSION_CONFIRMATION' || item.type === 'PROMOTION_CONFIRMATION' || item.type === 'ADMISSION' || item.action === 'ADMISSION_NOTIFICATION' || item.action === 'addNewAdmission') {
                     const isPromo = item.type === 'PROMOTION_CONFIRMATION' || item.action === 'PROMOTION_CONFIRMATION';
-                    const fs = item.feeStructure || {};
+                   const feeStruct = item.feeStructure || {};
 
-                    let mSingle = parseFloat(fs.monthly_fee || item.monthlyFee || 0);
-                    let mTotal = parseFloat(fs.monthly_total || (mSingle * 12) || 0);
-                    let admFee = parseFloat(fs.admission_fee || item.admission_fee || 0);
-                    let regFee = parseFloat(fs.registration_fee || item.registration_fee || 0);
-                    let chgFee = parseFloat(fs.class_change_fee || item.class_change_fee || 0);
-                    let halfFee = parseFloat(fs.half_yearly_exam_fee || item.half_yearly_exam_fee || 0);
-                    let annuFee = parseFloat(fs.annual_exam_fee || item.annual_exam_fee || 0);
-                    let pracFee = parseFloat(fs.practical_fee || item.practical_fee || 0);
-                    let boardFee = parseFloat(fs.board_fee || item.board_fee || 0);
-                    let admitFee = parseFloat(fs.admit_card_fee || item.admit_card_fee || 0);
+                    let mSingle = parseFloat(feeStruct.monthly_fee || item.monthlyFee || 0);
+                    let mTotal = parseFloat(feeStruct.monthly_total || (mSingle * 12) || 0);
+                    let admFee = parseFloat(feeStruct.admission_fee || item.admission_fee || 0);
+                    let regFee = parseFloat(feeStruct.registration_fee || item.registration_fee || 0);
+                    let chgFee = parseFloat(feeStruct.class_change_fee || item.class_change_fee || 0);
+                    let halfFee = parseFloat(feeStruct.half_yearly_exam_fee || item.half_yearly_exam_fee || 0);
+                    let annuFee = parseFloat(feeStruct.annual_exam_fee || item.annual_exam_fee || 0);
+                    let pracFee = parseFloat(feeStruct.practical_fee || item.practical_fee || 0);
+                    let boardFee = parseFloat(feeStruct.board_fee || item.board_fee || 0);
+                    let admitFee = parseFloat(feeStruct.admit_card_fee || item.admit_card_fee || 0);
 
-                    let grandTotal = item.totalAmount || fs.grand_total || fs.total_amount || (mTotal + admFee + regFee + chgFee + halfFee + annuFee + pracFee + boardFee + admitFee);
+                    let grandTotal = item.totalAmount || feeStruct.grand_total || feeStruct.total_amount || (mTotal + admFee + regFee + chgFee + halfFee + annuFee + pracFee + boardFee + admitFee);
 
                     let voiceFeeList = [];
                     if (mTotal > 0) voiceFeeList.push(`वार्षिक शिक्षण शुल्क ${mTotal} रुपये`);
@@ -2339,17 +2425,20 @@ app.get('/qr', (req, res) => {
             <p>अपने व्हाट्सएप से इस QR कोड को स्कैन करें:</p>
             <img src="${qrImageUrl}" alt="WhatsApp QR Code" style="border: 2px solid #333; padding: 10px; border-radius: 10px; width: 300px; height: 300px;"/>
             <br>
-            <p><a href="/reset-qr" style="color:red; font-weight:bold;">🔄 नया QR Code बनाएँ (Force Reset)</a></p>
+            <p><a href="/reset-qr?confirm=JRD2026" style="color:red; font-weight:bold;">🔄 नया QR Code बनाएँ (Force Reset)</a></p>
         </div>
     `);
 });
 
 app.get('/reset-qr', (req, res) => {
-    forceClearAuthFolder();
+    if (req.query.confirm !== 'JRD2026') {
+        return res.status(403).send('<h3>⚠️ Reset karne ke liye /reset-qr?confirm=JRD2026 kholein.</h3>');
+    }
+    forceClearAuthFolder();
     isBotReady = false;
     isConnecting = false;
     currentQrCode = '';
-    setTimeout(() => startBot(), 1000);
+    setTimeout(() => startBot(true), 1000);
     res.send('<h2 style="font-family:sans-serif; text-align:center; margin-top:50px;">🧹 पुराना सेशन साफ़ कर दिया गया है! <a href="/qr">/qr पेज खोलें</a>।</h2>');
 });
 
@@ -2456,22 +2545,24 @@ app.get('/', (req, res) => {
     res.send(`JRD WhatsApp Bot Status: ${isBotReady ? 'Connected ✅' : 'Waiting for QR scan ⏳'}`);
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`JRD VIP ERP Bot running on 0.0.0.0:${PORT}`);
-});
-
-startBot();
-
-// ⚡ Self-Ping Interval (Railway सर्वर को एक्टिव रखने हेतु)
+// ⚡ Self-Ping Interval (Server को एक्टिव रखने हेतु)
 setInterval(() => {
-   https.get('https://mp7k2cqazf71-production-noqbsigv.us-central1.suga.run/', (res) => {
+    https.get('https://mp7k2cqazf71-production-noqbsigv.us-central1.suga.run/', (res) => {
         res.resume(); // 🧹 सॉकेट और मेमोरी लीक से 100% सुरक्षा
         console.log('⚡ Self-Ping successful');
     }).on('error', (err) => {
-        console.error('❌ Self-Ping error:', err.message);
-    });
+        console.error('❌ Self-Ping error:', err.message);
+    });
 }, 4 * 60 * 1000);
+
+// 🧹 हर 6 घंटे में कैश सफाई (24/7 सर्वर पर RAM लीक से सुरक्षा)
+setInterval(() => {
+    msgRetryCounterCache.clear();
+    const now = Date.now();
+    for (const [k, exp] of pausedChats.entries()) {
+        if (now >= exp) pausedChats.delete(k);
+    }
+}, 6 * 60 * 60 * 1000);
 
 // 🎙️ TEACHER & STUDENT LIVE ATTENDANCE API WITH 1-31 QUOTES
 app.post('/send-attendance', async (req, res) => {
@@ -2640,3 +2731,9 @@ app.post('/send-attendance', async (req, res) => {
         return res.status(500).json({ status: 'error', message: error.toString() });
     }
 });
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`JRD VIP ERP Bot running on 0.0.0.0:${PORT}`);
+});
+
+startBot();
