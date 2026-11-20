@@ -422,7 +422,7 @@ async function runAiTool(name, args) {
 
 async function askJrdAiBrain(userText, audioBase64 = null) {
     if (!GEMINI_API_KEY) return "⚠️ सर्वर में GEMINI_API_KEY सेट नहीं है। कृपया suga.app Environment Variables में GEMINI_API_KEY जोड़ें।";
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`;
 
     const userParts = audioBase64
         ? [
