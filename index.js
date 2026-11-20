@@ -388,16 +388,80 @@ const AI_TOOLS = [
             }
         }
     },
-    {
+   {
         type: "function",
         function: {
             name: "get_bot_status",
             description: "Get live WhatsApp bot queue status, pending count and failed alerts.",
             parameters: { type: "object", properties: {} }
         }
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_teacher_salary",
+            description: "Get teacher monthly attendance summary (present/absent/leave) and calculated salary for a specific teacher or all teachers.",
+            parameters: {
+                type: "object",
+                properties: {
+                    teacher_name: { type: "string", description: "Optional teacher name in English" },
+                    month: { type: "number", description: "Optional month number 1-12" },
+                    year: { type: "number", description: "Optional 4-digit year e.g. 2026" }
+                }
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_fee_collection",
+            description: "Get total fee collected today, on a specific date, in a month, or full session along with recent receipts.",
+            parameters: {
+                type: "object",
+                properties: {
+                    mode: { type: "string", description: "'today', 'date', 'month', or 'session'" },
+                    date: { type: "string", description: "Optional date in yyyy-MM-dd format" },
+                    month: { type: "number", description: "Optional month 1-12" },
+                    year: { type: "number", description: "Optional year" }
+                }
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_student_attendance",
+            description: "Get today's student attendance summary, absent student list (whole school or class-wise), or a specific student's attendance history.",
+            parameters: {
+                type: "object",
+                properties: {
+                    student_name: { type: "string", description: "Optional student name in English or enrolment" },
+                    class_name: { type: "string", description: "Optional class filter e.g. 8, 10, LKG" },
+                    date: { type: "string", description: "Optional date yyyy-MM-dd" }
+                }
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_fee_structure",
+            description: "Get approved school fee structure (monthly tuition, admission, exam fees) for a class or all classes.",
+            parameters: {
+                type: "object",
+                properties: { class_name: { type: "string", description: "Optional class name e.g. 8, 10, LKG" } }
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "get_school_summary",
+            description: "Get overall school dashboard: total students, class-wise student count, total pending dues, defaulters count, today's fee collection, and today's student attendance.",
+            parameters: { type: "object", properties: {} }
+        }
     }
 ];
-
 async function runAiTool(name, args) {
     try {
         if (name === 'search_student') {
@@ -412,8 +476,28 @@ async function runAiTool(name, args) {
             const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=teacher_attendance&token=${GAS_TOKEN}&q=${encodeURIComponent(args.teacher_name || '')}`;
             return (await axios.get(url, { timeout: 15000 })).data;
         }
-        if (name === 'get_bot_status') {
+       if (name === 'get_bot_status') {
             return { bot_ready: isBotReady, pending_queue: messageQueue.length, failed_count: failedAlertsLog.length };
+        }
+        if (name === 'get_teacher_salary') {
+            const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=teacher_salary&token=${GAS_TOKEN}&q=${encodeURIComponent(args.teacher_name || '')}&month=${args.month || ''}&year=${args.year || ''}`;
+            return (await axios.get(url, { timeout: 15000 })).data;
+        }
+        if (name === 'get_fee_collection') {
+            const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=fee_collection&token=${GAS_TOKEN}&mode=${encodeURIComponent(args.mode || 'today')}&date=${encodeURIComponent(args.date || '')}&month=${args.month || ''}&year=${args.year || ''}`;
+            return (await axios.get(url, { timeout: 15000 })).data;
+        }
+        if (name === 'get_student_attendance') {
+            const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=student_attendance&token=${GAS_TOKEN}&q=${encodeURIComponent(args.student_name || '')}&cls=${encodeURIComponent(args.class_name || '')}&date=${encodeURIComponent(args.date || '')}`;
+            return (await axios.get(url, { timeout: 15000 })).data;
+        }
+        if (name === 'get_fee_structure') {
+            const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=fee_structure&token=${GAS_TOKEN}&cls=${encodeURIComponent(args.class_name || '')}`;
+            return (await axios.get(url, { timeout: 15000 })).data;
+        }
+        if (name === 'get_school_summary') {
+            const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=school_summary&token=${GAS_TOKEN}`;
+            return (await axios.get(url, { timeout: 15000 })).data;
         }
         if (name === 'send_fee_reminder_to_guardian') {
             const dueAmt = Math.round(Number(args.grand_due) || 0);
