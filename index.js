@@ -2159,6 +2159,8 @@ function buildFeeDueVoiceScript_({ studentName, className, grandDue, dueText }) 
     return `नमस्ते! आदरणीय अभिभावक जी, जे आर डी पब्लिक स्कूल मरुई से विनम्र निवेदन है। आपके प्रिय बच्चे ${sName}${classPart} की फीस बकाया है, ${breakdownPart}कुल मिलाकर ${amt} रुपये देय हैं। कृपया विद्यालय में सही समय पर फीस जमा करें, क्योंकि आप ही के सहयोग से विद्यालय का वित्तीय संचालन और विकास कार्य आगे बढ़ता है तथा शिक्षकों का समय पर वेतन भी देना होता है। किसी भी जानकारी या व्यवस्था हेतु विद्यालय कार्यालय में संपर्क करें। धन्यवाद!`;
 }
 
+const PAY_LINK_SECRET = 'JRD_PAY_2026_LOCK'; // public_html/pay.php वाले $PAY_SECRET से बिल्कुल एक जैसा होना चाहिए
+
 function buildGuardianPaymentAssets(student) {
     const currentDue = parseFloat(student.current_due) || 0;
     const oldDue = parseFloat(student.old_due) || 0;
@@ -2166,13 +2168,17 @@ function buildGuardianPaymentAssets(student) {
 
     if (grandDue <= 0) return null;
 
-    const labelPart = `${student.enrolment || ''} ${student.name || 'Fee'}`.trim();
-    const tn = encodeURIComponent(labelPart);
-    const stName = encodeURIComponent(student.name || 'Student');
+    const enr = String(student.enrolment || '').trim();
+    const rawName = String(student.name || 'Student').trim();
+    const sig = crypto.createHmac('sha256', PAY_LINK_SECRET)
+        .update(`${grandDue}|${enr}|${rawName}`)
+        .digest('hex')
+        .slice(0, 12);
+
+    const payLink = `https://jrdschool.online/pay.php?a=${grandDue}&e=${encodeURIComponent(enr)}&n=${encodeURIComponent(rawName)}&k=${sig}`;
+
+    const tn = encodeURIComponent(`${enr} ${rawName}`.trim());
     const upiLink = `upi://pay?pa=${encodeURIComponent(SCHOOL_UPI_ID)}&pn=${encodeURIComponent(SCHOOL_PAYEE_NAME)}&am=${grandDue}&cu=INR&tn=${tn}`;
-    // 🔒 Clean Official URL (UPI ID 100% hidden)
-    const payLink = `${BOT_BASE_URL}/pay?am=${grandDue}&st=${stName}&tn=${tn}`;
-    // 🎨 HD Navy-Blue Branded QR (420x420 with clean white border)
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=420x420&margin=18&color=0F294A&bgcolor=FFFFFF&ecc=M&data=${encodeURIComponent(upiLink)}`;
 
     return { grandDue, payLink, qrUrl };
