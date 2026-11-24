@@ -368,6 +368,56 @@ async function isAuthorizedAdminAiMsg(jid, msg) {
     const senderPh = await extractGuardianPhone(jid, msg);
     return senderPh === ADMIN_OWNER_PHONE;
 }
+// ⏳ 2-STEP CONFIRMATION STATE (4 मिनट में ऑटो-एक्सपायर + One-Time Execution)
+let pendingAiProposal = null;
+const PROPOSAL_TTL_MS = 4 * 60 * 1000;
+
+function setPendingProposal(proposal) {
+    pendingAiProposal = {
+        ...proposal,
+        id: crypto.randomBytes(8).toString('hex'),
+        expiresAt: Date.now() + PROPOSAL_TTL_MS,
+        consumed: false
+    };
+    return pendingAiProposal;
+}
+
+function getActiveProposal() {
+    if (!pendingAiProposal) return null;
+    if (pendingAiProposal.consumed || Date.now() > pendingAiProposal.expiresAt) {
+        pendingAiProposal = null;
+        return null;
+    }
+    return pendingAiProposal;
+}
+
+function clearPendingProposal() {
+    pendingAiProposal = null;
+}
+
+async function executePendingProposal() {
+    const prop = getActiveProposal();
+    if (!prop) {
+        return "⚠️ सर, अभी कोई सक्रिय पेंडिंग प्रस्ताव नहीं है (या 4 मिनट की समय-सीमा समाप्त हो चुकी है)। कृपया दोबारा आदेश दें।";
+    }
+    prop.consumed = true;
+    clearPendingProposal();
+
+    if (prop.kind === 'FEE_PAYMENT') {
+        const res = await callSecurePhpApi('ai_gateway.php', {
+            action: 'ai_fee_commit',
+            sender_phone: ADMIN_OWNER_PHONE,
+            engine_action: prop.engine_action,
+            commit_payload: prop.commit_payload
+        });
+        if (res.status !== 'SUCCESS') {
+            return `❌ फीस जमा करने में त्रुटि आई: ${res.message || 'Unknown error'}`;
+        }
+        return `✅ *फीस सफलतापूर्वक जमा (PAID) हो गई है!*\n━━━━━━━━━━━━━━━━━━━━━━━\n👤 *छात्र:* *${res.student}* (${res.class_name})\n📅 *सत्र:* ${res.session}\n🧾 *रसीद नं.:* \`${res.receipt_id}\`\n💰 *जमा राशि:* *₹${res.paid_amount}/-*\n📋 *विवरण:*\n${res.details}\n━━━━━━━━━━━━━━━━━━━━━━━\n_MySQL, Google Sheet और गार्जियन रसीद अलर्ट अपडेट हो चुके हैं।_`;
+    }
+
+    return "⚠️ अज्ञात प्रस्ताव प्रकार।";
+}
 const AI_TOOLS = [
     {
         type: "function",
@@ -489,11 +539,46 @@ const AI_TOOLS = [
             }
         }
     },
-    {
+  {
         type: "function",
         function: {
             name: "get_school_summary",
             description: "Get overall school dashboard: total students, class-wise student count, total pending dues, defaulters count, today's fee collection, and today's student attendance.",
+            parameters: { type: "object", properties: {} }
+        }
+    }, // 👈 यहाँ कॉमा (,) ज़रूर लगाएँ
+    {
+        type: "function",
+        function: {
+            name: "prepare_fee_payment",
+            description: "Check student fee structure, calculate exact month-wise/academic fee amounts and prior unpaid arrears, and create a pending confirmation preview. NEVER saves to database without user confirmation.",
+            parameters: {
+                type: "object",
+                properties: {
+                    student_query: { type: "string", description: "Student name in English or enrolment ID" },
+                    class_name: { type: "string", description: "Optional class name e.g. 9, 10, LKG" },
+                    months: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Requested month codes e.g. ['APR', 'MAY']"
+                    },
+                    academic_heads: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Optional academic fee keys: reg, adm, chg, exh, exa, prc, brd, adc"
+                    },
+                    lump_sum_amount: { type: "number", description: "Optional lump sum rupee amount if user gave amount instead of months" },
+                    pay_mode: { type: "string", enum: ["SELECTIVE", "FIFO", "AUTO"], description: "SELECTIVE for specific months only (Pay Now), FIFO for oldest-first allocation (Z-Engine), AUTO to detect" }
+                },
+                required: ["student_query"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "confirm_fee_payment",
+            description: "Execute and save the already-prepared pending fee payment proposal ONLY after admin explicitly says yes/confirm.",
             parameters: { type: "object", properties: {} }
         }
     }
@@ -550,6 +635,34 @@ async function runAiTool(name, args) {
             processQueue();
             return { status: 'queued', sent_to: gPhone, amount: dueAmt };
         }
+    
+        if (name === 'prepare_fee_payment') {
+            const data = await callSecurePhpApi('ai_gateway.php', {
+                action: 'ai_fee_preview',
+                sender_phone: ADMIN_OWNER_PHONE,
+                student_query: args.student_query || '',
+                class_name: args.class_name || '',
+                months: args.months || [],
+                academic_heads: args.academic_heads || [],
+                lump_sum_amount: args.lump_sum_amount || 0,
+                pay_mode: args.pay_mode || 'AUTO'
+            });
+            if (data.status === 'SUCCESS' && data.total_amount > 0) {
+                setPendingProposal({
+                    kind: 'FEE_PAYMENT',
+                    engine_action: data.engine_action,
+                    commit_payload: data.commit_payload,
+                    summary: data
+                });
+            }
+            return data;
+        }
+        if (name === 'confirm_fee_payment') {
+            const msgOut = await executePendingProposal();
+            return { status: 'EXECUTED', confirmation_message: msgOut };
+        }
+        // 👆 यहाँ तक
+        return { status: 'error', message: 'Unknown tool' };
         return { status: 'error', message: 'Unknown tool' };
     } catch (toolErr) {
         console.error(`⚠️ AI Tool [${name}] Error:`, toolErr.message);
@@ -622,7 +735,7 @@ async function groqChatPost(messages) {
 async function askJrdAiBrain(userText, audioBase64 = null) {
     if (!GROQ_API_KEY) return "⚠️ सर्वर में GROQ_API_KEY सेट नहीं है। कृपया Environment Variables में GROQ_API_KEY जोड़ें।";
 
-    try {
+   try {
         let finalQuery = (userText || '').trim();
         if (audioBase64) {
             finalQuery = await transcribeHindiAudioGroq(audioBase64);
@@ -630,9 +743,9 @@ async function askJrdAiBrain(userText, audioBase64 = null) {
             if (!finalQuery) return "⚠️ सर, आपकी आवाज़ साफ़ सुनाई नहीं दी, कृपया दोबारा बोलें।";
         }
 
-       const systemMsg = {
+        const systemMsg = {
             role: "system",
-            content: "तुम J.R.D. Public School, Marui के Director (सर्वेश सर) के पर्सनल AI सेक्रेटरी हो। हमेशा संक्षिप्त, सटीक और आदरपूर्ण हिंदी में जवाब दो ('सर' कहकर संबोधित करो)। बिना डेटा देखे अंदाज़ा मत लगाओ — हमेशा दिए गए tools का इस्तेमाल करो। ज़रूरी नियम: Google Sheet में सभी छात्र और शिक्षक के नाम English में हैं, इसलिए जब भी सर हिंदी में कोई नाम बोलें या लिखें (जैसे 'रोहन वर्मा', 'अमरेश पटेल'), तो tool call में हमेशा उसका शुद्ध English (Roman) नाम भेजो (जैसे 'Rohan Verma', 'Amresh Patel')। class_name में सिर्फ़ नंबर या क्लास नाम भेजो (जैसे '8', '10', 'LKG' — 'Class' या 'कक्षा' मत जोड़ो)। अगर पूरे नाम से 0 रिकॉर्ड आए, तो दोबारा सिर्फ़ पहले नाम (First Name) से search_student ज़रूर चलाओ।"
+            content: "तुम J.R.D. Public School, Marui के Director (सर्वेश सर) के पर्सनल AI सेक्रेटरी हो। हमेशा संक्षिप्त, सटीक और आदरपूर्ण हिंदी में जवाब दो ('सर' कहकर संबोधित करो)। बिना डेटा देखे अंदाज़ा मत लगाओ — हमेशा दिए गए tools का इस्तेमाल करो। ज़रूरी नियम: Google Sheet में सभी छात्र और शिक्षक के नाम English में हैं, इसलिए जब भी सर हिंदी में कोई नाम बोलें या लिखें (जैसे 'रोहन वर्मा', 'अमरेश पटेल'), तो tool call में हमेशा उसका शुद्ध English (Roman) नाम भेजो (जैसे 'Rohan Verma', 'Amresh Patel')। class_name में सिर्फ़ नंबर या क्लास नाम भेजो (जैसे '8', '10', 'LKG' — 'Class' या 'कक्षा' मत जोड़ो)। अगर पूरे नाम से 0 रिकॉर्ड आए, तो दोबारा सिर्फ़ पहले नाम (First Name) से search_student ज़रूर चलाओ। फीस या अटेंडेंस दर्ज करने से पहले हमेशा prepare_fee_payment या prepare_attendance चलाओ और पूरा प्रीव्यू दिखाकर सर से कन्फ़र्मेशन माँगो — बिना सर के स्पष्ट कन्फ़र्मेशन के कभी confirm मत चलाओ।"
         };
         const workingMessages = [systemMsg, ...aiChatHistory, { role: "user", content: finalQuery }];
 
@@ -1206,6 +1319,28 @@ async function startBot(skipRestore = false) {
                     await sendAiBoxReply(jid, { text: `🤖 *JRD AI:*\n✅ चैट मेमोरी साफ़ कर दी गई है सर। नया सवाल पूछें।` });
                     return;
                 }
+
+                // 👇 यहाँ से नया कन्फ़र्मेशन/कैंसिल ब्लॉक जोड़ें
+                const confirmWords = ['हाँ', 'हां', 'कन्फर्म', 'कन्फ़र्म', 'confirm', 'yes', 'ok', 'कर दो', 'जमा कर दो', 'सेव कर दो'];
+                const cancelWords  = ['नहीं', 'रद्द', 'कैंसिल', 'cancel', 'no', 'मत करो', 'रोको'];
+
+                if (getActiveProposal() && confirmWords.includes(lowerText)) {
+                    isAiBusy = true;
+                    try {
+                        const resultMsg = await executePendingProposal();
+                        await sendAiBoxReply(jid, { text: `🤖 *JRD AI:*\n${resultMsg}` });
+                    } finally {
+                        setTimeout(() => { isAiBusy = false; }, 1500);
+                    }
+                    return;
+                }
+
+                if (getActiveProposal() && cancelWords.includes(lowerText)) {
+                    clearPendingProposal();
+                    await sendAiBoxReply(jid, { text: `🤖 *JRD AI:*\n❌ पेंडिंग प्रस्ताव रद्द कर दिया गया है सर। कोई एंट्री नहीं की गई।` });
+                    return;
+                }
+                // 👆 यहाँ तक
 
                 const isAudio = !!msg.message.audioMessage;
                 if (!rawText && !isAudio) return;
