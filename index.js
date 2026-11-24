@@ -2233,15 +2233,20 @@ async function sendStudentProfileCard(jid, s) {
             console.error('⚠️ Profile QR send error:', qrErr.message);
         }
 
-        // 2️⃣ NAYA: असली PAY NOW बटन (externalAdReply हटा दिया)
+       // 2️⃣ सीधा PAY NOW लिंक (Chrome में खुलेगा और सारे UPI ऐप्स देगा)
         try {
             await new Promise(res => setTimeout(res, 900));
-            await sendPayNowButton(jid, stuUpper, payAssets.grandDue, payAssets.payLink);
+            await sendReply(
+                jid,
+                `💳 *ONLINE FEE PAYMENT — PAY NOW*\n` +
+                `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                `👤 *छात्र:* *${stuUpper}*\n` +
+                `💰 *राशि:* *₹${payAssets.grandDue}/-*\n\n` +
+                `👇 *Google Pay, PhonePe, Paytm या किसी भी UPI ऐप से भुगतान के लिए लिंक पर क्लिक करें:*\n${payAssets.payLink}`
+            );
         } catch (cardErr) {
-            console.error('⚠️ Pay button fallback:', cardErr.message);
-            await sendReply(jid, `💳 *PAY NOW (₹${payAssets.grandDue}/-):*\n${payAssets.payLink}`);
+            console.error('⚠️ Pay link send error:', cardErr.message);
         }
-    }
 
     // 3️⃣ Voice note (bina badlaav)
     if (sock && isBotReady) {
@@ -2860,19 +2865,17 @@ async function processQueue() {
                         await sendFeeReminderPdf(jid, item);
                     }
 
-                    if (item.type === 'FEE_REMINDER_COMBO') {
+                   if (item.type === 'FEE_REMINDER_COMBO') {
                         const pl = item.payLink || extractPayLink(item.message);
                         if (pl) {
                             await new Promise(r => setTimeout(r, 1500));
                             try {
-                                await sendPayNowButton(
+                                await sendReply(
                                     jid,
-                                    String(item.studentName || item.name || '').toUpperCase(),
-                                    item.totalAmount,
-                                    pl
+                                    `💳 *PAY NOW (₹${item.totalAmount}/-):*\n${pl}`
                                 );
                             } catch (e) {
-                                console.error('⚠️ Reminder PAY NOW button fail:', e.message);
+                                console.error('⚠️ Reminder PAY NOW link fail:', e.message);
                             }
                         }
                     }
