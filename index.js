@@ -3085,14 +3085,15 @@ else if (item.type === 'ATTENDANCE_ALERT' || item.type === 'SUBJECT_MARKS_ALERT'
                             await sock.sendMessage(jid, { text: textBody });
                         }
                     }
-                    // 💬 3. TEXT BROADCAST (Full VIP School Template)
-                    else {
-                        if (textBody && textBody.trim().length > 0) {
-                            await sock.sendMessage(jid, { text: textBody });
-                        }
-                    }
-                }
-           } else {
+                                     // 💬 3. TEXT BROADCAST (Full VIP School Template)
+                    else {
+                        if (textBody && textBody.trim().length > 0) {
+                            await sock.sendMessage(jid, { text: textBody });
+                        }
+                    }
+                    } // ← isCustomText ke else ka band
+                } // ← E. BROADCAST ke else ka band (yeh wala missing tha)
+            } else {
                 throw new Error('WhatsApp सॉकेट तैयार नहीं था, पुनः प्रयास के लिए रखा गया');
             } // if (sock && ...) बंद
         } catch (err) {
