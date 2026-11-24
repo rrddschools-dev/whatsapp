@@ -394,7 +394,37 @@ function getActiveProposal() {
 function clearPendingProposal() {
     pendingAiProposal = null;
 }
+// 📄 GROUP PDF HOLDER (AI Command Center ग्रुप में आई PDF को अस्थायी होल्ड करने के लिए)
+let pendingGroupPdf = null;
+const GROUP_PDF_TTL_MS = 10 * 60 * 1000;
 
+function setGroupPdf(pdfInfo) {
+    if (pendingGroupPdf?.filePath) {
+        try { if (fs.existsSync(pendingGroupPdf.filePath)) fs.unlinkSync(pendingGroupPdf.filePath); } catch (e) {}
+    }
+    pendingGroupPdf = {
+        ...pdfInfo,
+        expiresAt: Date.now() + GROUP_PDF_TTL_MS
+    };
+    return pendingGroupPdf;
+}
+
+function getGroupPdf() {
+    if (!pendingGroupPdf) return null;
+    if (Date.now() > pendingGroupPdf.expiresAt) {
+        try { if (pendingGroupPdf.filePath && fs.existsSync(pendingGroupPdf.filePath)) fs.unlinkSync(pendingGroupPdf.filePath); } catch (e) {}
+        pendingGroupPdf = null;
+        return null;
+    }
+    return pendingGroupPdf;
+}
+
+function clearGroupPdf() {
+    if (pendingGroupPdf?.filePath) {
+        try { if (fs.existsSync(pendingGroupPdf.filePath)) fs.unlinkSync(pendingGroupPdf.filePath); } catch (e) {}
+    }
+    pendingGroupPdf = null;
+}
 async function executePendingProposal() {
     const prop = getActiveProposal();
     if (!prop) {
@@ -426,6 +456,51 @@ if (prop.kind === 'ATTENDANCE') {
             return `❌ अटेंडेंस दर्ज करने में त्रुटि आई: ${res.message || 'Unknown error'}`;
         }
         return `✅ *अटेंडेंस सफलतापूर्वक दर्ज (SAVED) हो गई है!*\n━━━━━━━━━━━━━━━━━━━━━━━\n${res.message}\n_MySQL व Google Sheet अपडेट हो चुके हैं; गार्जियन/टीचर के नियमित SMS/नोटिफिकेशन अपने मौजूदा सिस्टम से चलेंगे।_`;
+    }
+    if (prop.kind === 'BROADCAST_PDF') {
+        const recipients = Array.isArray(prop.recipients) ? prop.recipients : [];
+        if (recipients.length === 0) {
+            return "⚠️ कोई वैध प्राप्तकर्ता नंबर नहीं मिला।";
+        }
+        if (!prop.filePath || !fs.existsSync(prop.filePath)) {
+            return "⚠️ PDF फ़ाइल अस्थायी रूप से उपलब्ध नहीं है (या एक्सपायर हो गई)। कृपया ग्रुप में दोबारा PDF भेजें।";
+        }
+
+        const pdfBuf = fs.readFileSync(prop.filePath);
+        const fileName = prop.fileName || 'JRD_Document.pdf';
+        const caption = prop.caption || `🏫 *J.R.D. PUBLIC SCHOOL, मरुई*\n📄 *${fileName}*`;
+
+        let sentOk = 0;
+        let sentFail = 0;
+
+        for (const r of recipients) {
+            const norm = normalizeIndianPhone(r.phone);
+            if (!norm) { sentFail++; continue; }
+            const targetJid = norm + '@s.whatsapp.net';
+            try {
+                if (sock && isBotReady) {
+                    await sock.sendMessage(targetJid, {
+                        document: pdfBuf,
+                        mimetype: 'application/pdf',
+                        fileName: fileName,
+                        caption: caption
+                    });
+                    sentOk++;
+                    if (recipients.length > 1) {
+                        const delayMs = Math.floor(Math.random() * 2000) + 1500;
+                        await new Promise(res => setTimeout(res, delayMs));
+                    }
+                } else {
+                    sentFail++;
+                }
+            } catch (sendErr) {
+                console.error(`❌ PDF send fail [${norm}]:`, sendErr.message);
+                sentFail++;
+            }
+        }
+
+        clearGroupPdf();
+        return `📄 *PDF ब्रॉडकास्ट पूर्ण!*\n━━━━━━━━━━━━━━━━━━━━━━━\n📌 *फ़ाइल:* \`${fileName}\`\n🎯 *लक्ष्य:* ${prop.targetLabel}\n✅ *भेजे गए:* ${sentOk}\n❌ *विफल:* ${sentFail}`;
     }
     return "⚠️ अज्ञात प्रस्ताव प्रकार।";
 }
@@ -630,6 +705,21 @@ const AI_TOOLS = [
             description: "Commit and save the already-prepared attendance proposal ONLY after admin says yes/confirm.",
             parameters: { type: "object", properties: {} }
         }
+    ,{
+        type: "function",
+        function: {
+            name: "prepare_pdf_broadcast",
+            description: "Prepare a preview to forward the recently uploaded group PDF to a specific class of students/guardians or all teachers. Never sends without confirmation.",
+            parameters: {
+                type: "object",
+                properties: {
+                    target_type: { type: "string", enum: ["STUDENTS", "TEACHERS"] },
+                    class_name: { type: "string", description: "Class name when target_type is STUDENTS e.g. 6, 8, 10, LKG" },
+                    caption: { type: "string", description: "Optional caption text to send with the PDF" }
+                },
+                required: ["target_type"]
+            }
+        }
     }
 ];
 async function runAiTool(name, args) {
@@ -736,6 +826,51 @@ async function runAiTool(name, args) {
         if (name === 'confirm_attendance') {
             const msgOut = await executePendingProposal();
             return { status: 'EXECUTED', confirmation_message: msgOut };
+        }
+        if (name === 'prepare_pdf_broadcast') {
+            const pdfObj = getGroupPdf();
+            if (!pdfObj) {
+                return { status: 'NO_PDF', message: 'ग्रुप में अभी कोई हालिया PDF फ़ाइल नहीं मिली (या 10 मिनट पूरे हो गए)। कृपया पहले ग्रुप में PDF भेजें।' };
+            }
+            const tType = String(args.target_type || 'STUDENTS').toUpperCase();
+            const clsName = String(args.class_name || '').trim();
+            const qs = new URLSearchParams({
+                action: 'get_broadcast_recipients',
+                targetType: tType,
+                className: clsName
+            });
+            const resp = await axios.get(`${PHP_API_BASE_URL}/api.php?${qs.toString()}`, { timeout: 15000 });
+            const list = Array.isArray(resp.data?.data) ? resp.data.data : [];
+
+            const uniqueMap = new Map();
+            for (const row of list) {
+                const nPh = normalizeIndianPhone(row.phone);
+                if (nPh && !uniqueMap.has(nPh)) {
+                    uniqueMap.set(nPh, { phone: nPh, name: row.name || '' });
+                }
+            }
+            const cleanRecipients = Array.from(uniqueMap.values());
+            const targetLabel = (tType === 'TEACHERS') ? 'सभी शिक्षक' : `कक्षा ${clsName || 'सभी'}`;
+
+            if (cleanRecipients.length === 0) {
+                return { status: 'EMPTY_RECIPIENTS', message: `${targetLabel} के लिए कोई वैध नंबर नहीं मिला।` };
+            }
+
+            setPendingProposal({
+                kind: 'BROADCAST_PDF',
+                filePath: pdfObj.filePath,
+                fileName: pdfObj.fileName,
+                caption: args.caption || '',
+                targetLabel: targetLabel,
+                recipients: cleanRecipients
+            });
+
+            return {
+                status: 'SUCCESS',
+                file_name: pdfObj.fileName,
+                target_label: targetLabel,
+                recipient_count: cleanRecipients.length
+            };
         }
         return { status: 'error', message: 'Unknown tool' };
     } catch (toolErr) {
@@ -1415,7 +1550,45 @@ async function startBot(skipRestore = false) {
                     return;
                 }
                 // 👆 यहाँ तक
+const docMsg = msg.message.documentMessage;
+                const isPdfDoc = !!(docMsg && (
+                    String(docMsg.mimetype || '').toLowerCase().includes('pdf') ||
+                    String(docMsg.fileName || '').toLowerCase().endsWith('.pdf')
+                ));
 
+                if (isPdfDoc) {
+                    isAiBusy = true;
+                    try {
+                        const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+                        if (!buf || buf.length < 100) throw new Error('PDF डाउनलोड नहीं हो सकी');
+
+                        const safeName = (docMsg.fileName || `Document_${Date.now()}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_');
+                        const tmpPdfPath = path.join(os.tmpdir(), `jrd_grp_${Date.now()}_${safeName}`);
+                        fs.writeFileSync(tmpPdfPath, buf);
+
+                        setGroupPdf({
+                            filePath: tmpPdfPath,
+                            fileName: safeName,
+                            sizeKb: Math.max(1, Math.round(buf.length / 1024))
+                        });
+
+                        const docCaption = String(docMsg.caption || '').trim();
+                        if (docCaption) {
+                            const aiReply = await askJrdAiBrain(`${docCaption} (Note: PDF file '${safeName}' is now staged and ready; use prepare_pdf_broadcast to preview recipients before asking confirmation.)`, null);
+                            await sendAiBoxReply(jid, { text: `🤖 *JRD AI:*\n${aiReply}` });
+                        } else {
+                            await sendAiBoxReply(jid, {
+                                text: `🤖 *JRD AI:*\n📄 PDF फ़ाइल *\`${safeName}\`* (${Math.max(1, Math.round(buf.length / 1024))} KB) सेव कर ली गई है सर।\nबताइए यह किस **क्लास** या **टीचर्स** को भेजनी है?`
+                            });
+                        }
+                    } catch (pdfErr) {
+                        console.error('❌ Group PDF Error:', pdfErr.message);
+                        await sendAiBoxReply(jid, { text: `⚠️ PDF सेव करने में त्रुटि: ${pdfErr.message}` });
+                    } finally {
+                        setTimeout(() => { isAiBusy = false; }, 1500);
+                    }
+                    return;
+                }
                 const isAudio = !!msg.message.audioMessage;
                 if (!rawText && !isAudio) return;
 
