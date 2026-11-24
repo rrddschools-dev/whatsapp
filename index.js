@@ -943,10 +943,22 @@ async function groqChatPost(messages) {
     throw lastErr;
 }
 
+function isDirectConfirmText_(txt) {
+    const t = String(txt || '').toLowerCase().replace(/[।.!?,]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!t || t.length > 45) return false;
+    if (/(नहीं|मत|रद्द|कैंसिल|रोको|no|nahi|nahin|cancel|stop|mat)/.test(t)) return false;
+    return /^(जी\s*)?(ha|haa|haan|han|हाँ|हां|yes|ok|okay|theek hai|thik hai|ठीक है|confirm|कन्फर्म|कन्फ़र्म|pay|पे|जमा|save|सेव)(\s+(जी|सर|भाई|कर दो|जमा कर दो|सेव कर दो|पे कर दो|फीस जमा कर दो|फीस पे कर दो|अटेंडेंस सेव कर दो|करो|कर दीजिए|kar do|jama kar do|pay kar do|save kar do|fee jama kar do|fees jama kar do))?$/.test(t);
+}
+
+function isDirectCancelText_(txt) {
+    const t = String(txt || '').toLowerCase().replace(/[।.!?,]/g, ' ').replace(/\s+/g, ' ').trim();
+    return /^(no|nahi|nahin|नहीं|cancel|रद्द|कैंसिल|mat karo|मत करो|roko|रोको|नहीं करना|छोड़ दो)$/.test(t);
+}
+
 async function askJrdAiBrain(userText, audioBase64 = null) {
     if (!GROQ_API_KEY) return "⚠️ सर्वर में GROQ_API_KEY सेट नहीं है। कृपया Environment Variables में GROQ_API_KEY जोड़ें।";
 
-   try {
+    try {
         let finalQuery = (userText || '').trim();
         if (audioBase64) {
             finalQuery = await transcribeHindiAudioGroq(audioBase64);
@@ -954,9 +966,18 @@ async function askJrdAiBrain(userText, audioBase64 = null) {
             if (!finalQuery) return "⚠️ सर, आपकी आवाज़ साफ़ सुनाई नहीं दी, कृपया दोबारा बोलें।";
         }
 
+        // 🔒 100% CODE-LOCKED CONFIRMATION (Text + Voice Note dono par kaam karega — AI kabhi jhooth nahi bolega)
+        if (getActiveProposal() && isDirectConfirmText_(finalQuery)) {
+            return await executePendingProposal();
+        }
+        if (getActiveProposal() && isDirectCancelText_(finalQuery)) {
+            clearPendingProposal();
+            return "❌ पेंडिंग प्रस्ताव रद्द कर दिया गया है सर। कोई एंट्री नहीं की गई।";
+        }
+
         const systemMsg = {
             role: "system",
-            content: "तुम J.R.D. Public School, Marui के Director (सर्वेश सर) के पर्सनल AI सेक्रेटरी हो। हमेशा संक्षिप्त, सटीक और आदरपूर्ण हिंदी में जवाब दो ('सर' कहकर संबोधित करो)। बिना डेटा देखे अंदाज़ा मत लगाओ — हमेशा दिए गए tools का इस्तेमाल करो। ज़रूरी नियम: Google Sheet में सभी छात्र और शिक्षक के नाम English में हैं, इसलिए जब भी सर हिंदी में कोई नाम बोलें या लिखें (जैसे 'रोहन वर्मा', 'अमरेश पटेल'), तो tool call में हमेशा उसका शुद्ध English (Roman) नाम भेजो (जैसे 'Rohan Verma', 'Amresh Patel')। class_name में सिर्फ़ नंबर या क्लास नाम भेजो (जैसे '8', '10', 'LKG' — 'Class' या 'कक्षा' मत जोड़ो)। अगर पूरे नाम से 0 रिकॉर्ड आए, तो दोबारा सिर्फ़ पहले नाम (First Name) से search_student ज़रूर चलाओ। फीस या अटेंडेंस दर्ज करने से पहले हमेशा prepare_fee_payment या prepare_attendance चलाओ और पूरा प्रीव्यू दिखाकर सर से कन्फ़र्मेशन माँगो — बिना सर के स्पष्ट कन्फ़र्मेशन के कभी confirm मत चलाओ।"
+            content: "तुम J.R.D. Public School, Marui के Director (सर्वेश सर) के पर्सनल AI सेक्रेटरी हो। हमेशा संक्षिप्त, सटीक और आदरपूर्ण हिंदी में जवाब दो ('सर' कहकर संबोधित करो)। बिना डेटा देखे अंदाज़ा मत लगाओ — हमेशा दिए गए tools का इस्तेमाल करो। ज़रूरी नियम: 1) Google Sheet/DB में नाम English में हैं, इसलिए tool call में शुद्ध English नाम भेजो। 2) class_name में सिर्फ़ नंबर या क्लास नाम भेजो ('8', '10', 'LKG')। 3) जब prepare_fee_payment से 'formatted_fee_report' और 'breakdown' मिले, तो तुम खुद कोई जोड़-घटाव (math) मत करो — PHP का वही exact 'formatted_fee_report' और *बोल्ड* में जमा होने वाली राशि ज्यों का त्यों दिखाओ और सर से कन्फ़र्मेशन (हाँ/नहीं) माँगो। 4) बिना confirm_fee_payment या confirm_attendance टूल से 'EXECUTED' आए कभी मत बोलो कि फीस जमा या अटेंडेंस सेव हो गई।"
         };
         const workingMessages = [systemMsg, ...aiChatHistory, { role: "user", content: finalQuery }];
 
@@ -972,6 +993,31 @@ async function askJrdAiBrain(userText, audioBase64 = null) {
                     let fnArgs = {};
                     try { fnArgs = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
                     const toolResult = await runAiTool(fnName, fnArgs);
+
+                  // 🔒 Fee Preview आते ही सीधा Bold + Exact PHP Report + Prior Arrears चेतावनी भेजें
+                    if (fnName === 'prepare_fee_payment' && toolResult?.status === 'SUCCESS' && toolResult?.formatted_fee_report) {
+                        const arrearsBlock = (toolResult.has_prior_arrears && Array.isArray(toolResult.prior_arrears) && toolResult.prior_arrears.length > 0)
+                            ? `\n\n⚠️ *पिछला बकाया चेतावनी (PRIOR UNPAID DUES):*\n` +
+                              toolResult.prior_arrears.map(a => `• *${a.label}:* *₹${a.due}/-*`).join('\n')
+                            : '';
+
+                        const bdLines = (toolResult.breakdown || []).map(b => `• *${b.label}:* *₹${b.amount}/-*`).join('\n');
+                        const payBlock = toolResult.total_amount > 0
+                            ? `\n\n🧾 *अभी जमा होने वाला प्रस्ताव (PROPOSAL):*\n${bdLines}\n━━━━━━━━━━━━━━━━━━\n💰 *कुल जमा राशि:* *₹${toolResult.total_amount}/-*\n\n👉 _क्या इसे जमा (PAID) कर दूँ सर? कृपया *हाँ* या *नहीं* लिखें/बोलें।_`
+                            : '';
+
+                        const directReply = `${toolResult.formatted_fee_report}${arrearsBlock}${payBlock}`;
+                        aiChatHistory.push({ role: "user", content: finalQuery });
+                        aiChatHistory.push({ role: "assistant", content: directReply });
+                        if (aiChatHistory.length > 8) aiChatHistory = aiChatHistory.slice(-8);
+                        return directReply;
+                    }
+
+                    // 🔒 Confirm tool chale toh uska exact message seedha return karo
+                    if ((fnName === 'confirm_fee_payment' || fnName === 'confirm_attendance') && toolResult?.confirmation_message) {
+                        return toolResult.confirmation_message;
+                    }
+
                     workingMessages.push({
                         role: "tool",
                         tool_call_id: tc.id,
@@ -1531,11 +1577,8 @@ async function startBot(skipRestore = false) {
                     return;
                 }
 
-                // 👇 यहाँ से नया कन्फ़र्मेशन/कैंसिल ब्लॉक जोड़ें
-                const confirmWords = ['हाँ', 'हां', 'कन्फर्म', 'कन्फ़र्म', 'confirm', 'yes', 'ok', 'कर दो', 'जमा कर दो', 'सेव कर दो'];
-                const cancelWords  = ['नहीं', 'रद्द', 'कैंसिल', 'cancel', 'no', 'मत करो', 'रोको'];
-
-                if (getActiveProposal() && confirmWords.includes(lowerText)) {
+               // 👇 यहाँ से नया कन्फ़र्मेशन/कैंसिल ब्लॉक जोड़ें
+                if (getActiveProposal() && isDirectConfirmText_(rawText)) {
                     isAiBusy = true;
                     try {
                         const resultMsg = await executePendingProposal();
@@ -1546,7 +1589,7 @@ async function startBot(skipRestore = false) {
                     return;
                 }
 
-                if (getActiveProposal() && cancelWords.includes(lowerText)) {
+                if (getActiveProposal() && isDirectCancelText_(rawText)) {
                     clearPendingProposal();
                     await sendAiBoxReply(jid, { text: `🤖 *JRD AI:*\n❌ पेंडिंग प्रस्ताव रद्द कर दिया गया है सर। कोई एंट्री नहीं की गई।` });
                     return;
