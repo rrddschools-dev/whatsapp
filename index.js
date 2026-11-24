@@ -2878,21 +2878,6 @@ async function processQueue() {
                         await new Promise(res => setTimeout(res, 5000));
                         await sendFeeReminderPdf(jid, item);
                     }
-
-                   if (item.type === 'FEE_REMINDER_COMBO') {
-                        const pl = item.payLink || extractPayLink(item.message);
-                        if (pl) {
-                            await new Promise(r => setTimeout(r, 1500));
-                            try {
-                                await sendReply(
-                                    jid,
-                                    `💳 *PAY NOW (₹${item.totalAmount}/-):*\n${pl}`
-                                );
-                            } catch (e) {
-                                console.error('⚠️ Reminder PAY NOW link fail:', e.message);
-                            }
-                        }
-                    }
                 }
 
                 // 🎯 B. NEW ADMISSION & CLASS PROMOTION CONFIRMATION
