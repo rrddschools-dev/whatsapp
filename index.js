@@ -1,5 +1,5 @@
 const makeWASocket = require('@whiskeysockets/baileys').default;
-const { useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const { useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion, downloadMediaMessage, generateWAMessageFromContent, proto } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const express = require('express');
@@ -2132,11 +2132,53 @@ function buildGuardianPaymentAssets(student) {
     const labelPart = `${student.enrolment || ''} ${student.name || 'Fee'}`.trim();
     const tn = encodeURIComponent(labelPart);
     const upiLink = `upi://pay?pa=${encodeURIComponent(SCHOOL_UPI_ID)}&pn=${encodeURIComponent(SCHOOL_PAYEE_NAME)}&am=${grandDue}&cu=INR&tn=${tn}`;
-    const payLink = `${BOT_BASE_URL}/pay?pa=${encodeURIComponent(SCHOOL_UPI_ID)}&pn=${encodeURIComponent(SCHOOL_PAYEE_NAME)}&am=${grandDue}&tn=${tn}`;
+    // Clean URL — UPI ID ab bilkul nahi dikhegi
+    const payLink = `${BOT_BASE_URL}/pay?am=${grandDue}&tn=${tn}`;
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiLink)}`;
 
     return { grandDue, payLink, qrUrl };
 }
+
+async function sendOfficialPayNowButton(jid, studentName, grandDue, payLink) {
+    if (!sock || !isBotReady) return;
+    try {
+        const msg = generateWAMessageFromContent(jid, {
+            viewOnceMessage: {
+                message: {
+                    interactiveMessage: proto.Message.InteractiveMessage.create({
+                        header: proto.Message.InteractiveMessage.Header.create({
+                            title: `🏫 J.R.D. PUBLIC SCHOOL, MARUI`,
+                            hasMediaAttachment: false
+                        }),
+                        body: proto.Message.InteractiveMessage.Body.create({
+                            text: `👤 *छात्र:* ${studentName}\n🚩 *कुल देय राशि:* *₹${grandDue}/-*\n\nनीचे दिए गए *PAY NOW* बटन पर क्लिक करके सीधे किसी भी UPI ऐप (PhonePe / GPay / Paytm) से फीस जमा करें।`
+                        }),
+                        footer: proto.Message.InteractiveMessage.Footer.create({
+                            text: `Official Digital Fee Desk • JRD Public School`
+                        }),
+                        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
+                            buttons: [
+                                {
+                                    name: "cta_url",
+                                    buttonParamsJson: JSON.stringify({
+                                        display_text: `💳 PAY NOW  ₹${grandDue}/-`,
+                                        url: payLink,
+                                        merchant_url: payLink
+                                    })
+                                }
+                            ]
+                        })
+                    })
+                }
+            }
+        }, {});
+        await sock.relayMessage(jid, msg.message, { messageId: msg.key.id });
+    } catch (btnErr) {
+        console.error('⚠️ Pay Now Button fallback:', btnErr.message);
+        await sendReply(jid, `💳 *ऑनलाइन फीस भुगतान (PAY NOW)*\n🚩 *कुल देय राशि:* *₹${grandDue}/-*\n👉 *यहाँ क्लिक करें:* ${payLink}`);
+    }
+}
+
 async function sendStudentProfileCard(jid, s) {
     const currentDue = parseFloat(s.current_due) || 0;
     const oldDue     = parseFloat(s.old_due) || 0;
@@ -2145,8 +2187,7 @@ async function sendStudentProfileCard(jid, s) {
 
     const paymentNoticeBlock = grandDue > 0
         ? `\n🚨 *कृपया जल्द से जल्द फीस को जमा करें।*\n` +
-          `🏢 *किसी भी सहायता या जानकारी हेतु विद्यालय कार्यालय में संपर्क करें।*\n` +
-          (payAssets ? `📲 *ऑनलाइन भुगतान लिंक:* ${payAssets.payLink}\n` : ``)
+          `🏢 *किसी भी सहायता या जानकारी हेतु विद्यालय कार्यालय में संपर्क करें।*\n`
         : `\n🎉 *आपके पाल्य की सभी फीस जमा है।*\n` +
           `🏢 *किसी भी जानकारी हेतु विद्यालय कार्यालय में संपर्क करें।*\n`;
 
@@ -2156,14 +2197,9 @@ async function sendStudentProfileCard(jid, s) {
 
     if (payAssets && sock && isBotReady) {
         try {
-            await new Promise(res => setTimeout(res, 1500));
-            await sock.sendMessage(jid, {
-                image: { url: payAssets.qrUrl },
-                caption: `💳 *FEE PAYMENT QR — ${String(s.name || '').toUpperCase()}*\n🚩 *कुल बकाया राशि:* ₹${payAssets.grandDue}/-\n\nकृपया जल्द से जल्द फीस को जमा करें। QR स्कैन करें या ऊपर दिए लिंक से भुगतान करें।\n🏢 *कार्यालय में संपर्क करें।*`
-            });
-        } catch (qrErr) {
-            console.error('⚠️ Profile QR send error:', qrErr.message);
-        }
+            await new Promise(res => setTimeout(res, 1200));
+            await sendOfficialPayNowButton(jid, s.name || 'विद्यार्थी', payAssets.grandDue, payAssets.payLink);
+        } catch (e) {}
     }
 
     if (sock && isBotReady) {
@@ -2173,8 +2209,7 @@ async function sendStudentProfileCard(jid, s) {
                 studentName: s.name,
                 className: s.class,
                 grandDue: grandDue,
-                dueText: (s.due_list || '') + (oldDue > 0 ? `
-पिछला बकाया ${oldDue} रुपये` : '')
+                dueText: (s.due_list || '') + (oldDue > 0 ? `\nपिछला बकाया ${oldDue} रुपये` : '')
             });
             const audioBuffer = await generateHindiVoiceNote(voiceScript);
             if (audioBuffer) {
@@ -2185,7 +2220,6 @@ async function sendStudentProfileCard(jid, s) {
         }
     }
 }
-
 // 📄 BRANDED ADMISSION / PROMOTION PDF CERTIFICATE BUILDER
 async function sendAdmissionOrPromotionPdf(jid, item) {
     return new Promise((resolve) => {
@@ -3412,17 +3446,18 @@ app.get('/test-voice', async (req, res) => {
     }
     res.json(out);
 });
-// 💳 UPI पेमेंट रीडायरेक्ट पेज (WhatsApp लिंक -> UPI ऐप)
 app.get('/pay', (req, res) => {
     const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const am = Math.max(1, parseInt(req.query.am, 10) || 1);
-    const upi = 'upi://pay?pa=' + encodeURIComponent(req.query.pa || '') +
-                '&pn=' + encodeURIComponent(req.query.pn || '') +
-                '&am=' + am + '&cu=INR&tn=' + encodeURIComponent(req.query.tn || '');
+    const pa = req.query.pa || SCHOOL_UPI_ID;
+    const pn = req.query.pn || SCHOOL_PAYEE_NAME;
+    const upi = 'upi://pay?pa=' + encodeURIComponent(pa) +
+                '&pn=' + encodeURIComponent(pn) +
+                '&am=' + am + '&cu=INR&tn=' + encodeURIComponent(req.query.tn || 'JRD School Fee');
     res.send('<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">' +
         '<body style="font-family:sans-serif;text-align:center;padding:40px">' +
-        '<h3>' + esc(req.query.pn) + '</h3><p>Fees: ₹' + am + '</p>' +
-        '<a href="' + esc(upi) + '" style="display:inline-block;padding:14px 28px;background:#16a34a;color:#fff;border-radius:8px;text-decoration:none;font-size:18px">UPI se pay karein</a>' +
+        '<h3>' + esc(pn) + '</h3><p>Fees: ₹' + am + '</p>' +
+        '<a href="' + esc(upi) + '" style="display:inline-block;padding:14px 28px;background:#16a34a;color:#fff;border-radius:8px;text-decoration:none;font-size:18px">💳 Pay Now via UPI</a>' +
         '<script>location.href=' + JSON.stringify(upi).replace(/</g, '\\u003c') + '</script></body>');
 });
 // 📊 लाइव क्यू मॉनिटर (/queue-status खोलकर देखें कितने मैसेज बाकी हैं)
