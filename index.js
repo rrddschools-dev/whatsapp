@@ -2071,19 +2071,56 @@ const docMsg = msg.message.documentMessage;
     }
 }
 
+// ====== NAYA: PAY NOW BUTTON HELPERS ======
+function extractPayLink(text) {
+    const m = String(text || '').match(/https?:\/\/[^\s]+\/pay\?[^\s]+/);
+    return m ? m[0] : '';
+}
+
+async function sendPayNowButton(jid, studentName, amount, payLink) {
+    const IM = proto.Message.InteractiveMessage;
+    const content = {
+        viewOnceMessage: { message: {
+            messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+            interactiveMessage: IM.create({
+                header: IM.Header.create({ title: '💳 FEE PAYMENT', subtitle: '', hasMediaAttachment: false }),
+                body: IM.Body.create({
+                    text: `👤 *${studentName}*\n💰 *देय राशि: ₹${amount}/-*\n\n👇 भुगतान हेतु नीचे *PAY NOW* दबाएँ।\n_(बटन न दिखे तो लिंक: ${payLink})_`
+                }),
+                footer: IM.Footer.create({ text: 'J.R.D. Public School, Marui' }),
+                nativeFlowMessage: IM.NativeFlowMessage.create({
+                    buttons: [{
+                        name: 'cta_url',
+                        buttonParamsJson: JSON.stringify({
+                            display_text: '💳 PAY NOW',
+                            url: payLink,
+                            merchant_url: payLink
+                        })
+                    }]
+                })
+            })
+        } }
+    };
+    const m = generateWAMessageFromContent(jid, content, { userJid: sock.user.id });
+    await sock.relayMessage(jid, m.message, { messageId: m.key.id });
+}
+
+// ====== PURANA (bina badlaav): sendReply ======
 async function sendReply(jid, text) {
-    try {
-        if (sock && isBotReady) {
-            const sent = await sock.sendMessage(jid, { text });
-           if (sent?.key?.id) {
+    try {
+        if (sock && isBotReady) {
+            const sent = await sock.sendMessage(jid, { text });
+            if (sent?.key?.id) {
                 messageCache.set(sent.key.id, { conversation: text });
                 if (messageCache.size > 500) messageCache.delete(messageCache.keys().next().value);
             }
-        }
-    } catch (err) {
-        console.error('❌ उत्तर भेजने में त्रुटि:', err.message);
-    }
+        }
+    } catch (err) {
+        console.error('❌ उत्तर भेजने में त्रुटि:', err.message);
+    }
 }
+
+// ====== PURANE CONSTANTS (bina badlaav) ======
 const SCHOOL_UPI_ID = "sarveshverma3590@naviaxis";
 const SCHOOL_PAYEE_NAME = "JRD Public School Marui";
 const BOT_BASE_URL = "https://mp7k2cqazf71-production-noqbsigv.us-central1.suga.run";
@@ -2180,7 +2217,7 @@ async function sendStudentProfileCard(jid, s) {
     await sendReply(jid, replyMsg);
 
     if (payAssets && sock && isBotReady) {
-        // 1️⃣ Attractive Navy-Blue HD QR Image
+        // 1️⃣ QR image (bina badlaav)
         try {
             await new Promise(res => setTimeout(res, 1100));
             await sock.sendMessage(jid, {
@@ -2196,34 +2233,17 @@ async function sendStudentProfileCard(jid, s) {
             console.error('⚠️ Profile QR send error:', qrErr.message);
         }
 
-        // 2️⃣ Official Clickable "PAY NOW" Rich Preview Card
+        // 2️⃣ NAYA: असली PAY NOW बटन (externalAdReply हटा दिया)
         try {
             await new Promise(res => setTimeout(res, 900));
-            await sock.sendMessage(jid, {
-                text:
-                    `💳 *ONLINE FEE PAYMENT — PAY NOW*\n` +
-                    `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                    `👤 *छात्र:* *${stuUpper}*\n` +
-                    `💰 *राशि:* *₹${payAssets.grandDue}/-*\n\n` +
-                    `👇 *तुरंत भुगतान के लिए नीचे क्लिक करें:*\n${payAssets.payLink}`,
-                contextInfo: {
-                    externalAdReply: {
-                        title: `💳 PAY NOW — ₹${payAssets.grandDue}/-`,
-                        body: `J.R.D. Public School, Marui • ${stuUpper} (Verified Fee Desk)`,
-                        mediaType: 1,
-                        renderLargerThumbnail: false,
-                        thumbnailUrl: payAssets.qrUrl,
-                        sourceUrl: payAssets.payLink,
-                        mediaUrl: payAssets.payLink
-                    }
-                }
-            });
+            await sendPayNowButton(jid, stuUpper, payAssets.grandDue, payAssets.payLink);
         } catch (cardErr) {
-            console.error('⚠️ Pay Card fallback:', cardErr.message);
-            await sendReply(jid, `💳 *PAY NOW (₹${payAssets.grandDue}/-):* ${payAssets.payLink}`);
+            console.error('⚠️ Pay button fallback:', cardErr.message);
+            await sendReply(jid, `💳 *PAY NOW (₹${payAssets.grandDue}/-):*\n${payAssets.payLink}`);
         }
     }
 
+    // 3️⃣ Voice note (bina badlaav)
     if (sock && isBotReady) {
         try {
             await new Promise(res => setTimeout(res, 1400));
@@ -2819,7 +2839,7 @@ async function processQueue() {
                         try { await sock.sendPresenceUpdate('paused', jid); } catch (e) {}
                     }
 
-                    // 2️⃣ QR इमेज के कैप्शन में पूरा हिसाब व /pay लिंक (फेल-सेफ सुरक्षा के साथ)
+                  // 2️⃣ QR इमेज के कैप्शन में पूरा हिसाब व /pay लिंक (फेल-सेफ सुरक्षा के साथ)
                     if (item.type === 'FEE_REMINDER_COMBO' && item.qrUrl) {
                         const cap = item.message || '';
                         try {
@@ -2838,6 +2858,23 @@ async function processQueue() {
                         if (item.message) await sock.sendMessage(jid, { text: item.message });
                         await new Promise(res => setTimeout(res, 5000));
                         await sendFeeReminderPdf(jid, item);
+                    }
+
+                    if (item.type === 'FEE_REMINDER_COMBO') {
+                        const pl = item.payLink || extractPayLink(item.message);
+                        if (pl) {
+                            await new Promise(r => setTimeout(r, 1500));
+                            try {
+                                await sendPayNowButton(
+                                    jid,
+                                    String(item.studentName || item.name || '').toUpperCase(),
+                                    item.totalAmount,
+                                    pl
+                                );
+                            } catch (e) {
+                                console.error('⚠️ Reminder PAY NOW button fail:', e.message);
+                            }
+                        }
                     }
                 }
 
