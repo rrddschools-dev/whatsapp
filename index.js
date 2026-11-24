@@ -2247,7 +2247,7 @@ async function sendStudentProfileCard(jid, s) {
         } catch (cardErr) {
             console.error('⚠️ Pay link send error:', cardErr.message);
         }
-
+}
     // 3️⃣ Voice note (bina badlaav)
     if (sock && isBotReady) {
         try {
