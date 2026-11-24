@@ -705,7 +705,8 @@ const AI_TOOLS = [
             description: "Commit and save the already-prepared attendance proposal ONLY after admin says yes/confirm.",
             parameters: { type: "object", properties: {} }
         }
-    ,{
+    },
+    {
         type: "function",
         function: {
             name: "prepare_pdf_broadcast",
