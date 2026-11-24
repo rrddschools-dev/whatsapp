@@ -3475,10 +3475,14 @@ app.get('/pay', (req, res) => {
     const pn = req.query.pn || SCHOOL_PAYEE_NAME;
     const st = req.query.st || 'Student';
     const tn = req.query.tn || 'JRD School Fee';
-    const upi = 'upi://pay?pa=' + encodeURIComponent(pa) +
-                '&pn=' + encodeURIComponent(pn) +
-                '&am=' + am + '&cu=INR&tn=' + encodeURIComponent(tn);
-    const qrImg = 'https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=14&color=0F294A&bgcolor=FFFFFF&data=' + encodeURIComponent(upi);
+
+    const params = `pa=${encodeURIComponent(pa)}&pn=${encodeURIComponent(pn)}&am=${am}&cu=INR&tn=${encodeURIComponent(tn)}`;
+    const genericUpi = `upi://pay?${params}`;
+    const gpayUrl    = `tez://upi/pay?${params}`;
+    const phonepeUrl = `phonepe://pay?${params}`;
+    const paytmUrl   = `paytmmp://pay?${params}`;
+    const bhimUrl    = `bhim://pay?${params}`;
+    const qrImg      = `https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=14&color=0F294A&bgcolor=FFFFFF&data=${encodeURIComponent(genericUpi)}`;
 
     res.send(`<!doctype html>
 <html lang="hi">
@@ -3488,51 +3492,63 @@ app.get('/pay', (req, res) => {
 <title>💳 PAY NOW ₹${am}/- | ${esc(pn)}</title>
 <meta property="og:type" content="website">
 <meta property="og:title" content="💳 PAY NOW — ₹${am}/- | J.R.D. Public School">
-<meta property="og:description" content="Official Digital Fee Payment for ${esc(st)}. Tap to pay safely via PhonePe, Google Pay or Paytm.">
+<meta property="og:description" content="Choose Google Pay, PhonePe, Paytm or any UPI App for ${esc(st)}.">
 <meta property="og:image" content="${esc(qrImg)}">
 <meta name="theme-color" content="#0F294A">
 <style>
   *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
-  body{min-height:100vh;background:linear-gradient(145deg,#0F294A 0%,#1E3A8A 100%);display:flex;align-items:center;justify-content:center;padding:18px}
-  .card{width:100%;max-width:400px;background:#fff;border-radius:22px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.32);text-align:center}
-  .hdr{background:#0F294A;color:#fff;padding:22px 18px 18px}
-  .badge{display:inline-block;background:rgba(34,197,94,.18);color:#86efac;border:1px solid rgba(134,239,172,.4);font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;margin-bottom:8px;letter-spacing:.4px}
-  .hdr h1{font-size:19px;font-weight:800;letter-spacing:.3px}
-  .hdr p{font-size:12px;color:#cbd5e1;margin-top:4px}
-  .body{padding:22px 20px 24px}
-  .stu{background:#f1f5f9;border-radius:12px;padding:10px 14px;font-size:13px;color:#334155;margin-bottom:16px}
-  .stu b{color:#0F294A;font-size:15px;display:block;margin-top:2px}
-  .amt-lbl{font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.6px;font-weight:700}
-  .amt{font-size:40px;font-weight:900;color:#0F294A;margin:4px 0 18px}
-  .pay-btn{display:block;width:100%;padding:16px;background:linear-gradient(90deg,#16a34a,#15803d);color:#fff;text-decoration:none;border-radius:14px;font-size:18px;font-weight:800;letter-spacing:.4px;box-shadow:0 10px 24px rgba(22,163,74,.35)}
-  .apps{font-size:12px;color:#64748b;margin:12px 0 18px}
-  .qr-box{border:1.5px dashed #cbd5e1;border-radius:16px;padding:12px;display:inline-block;background:#f8fafc}
-  .qr-box img{width:170px;height:170px;display:block;border-radius:8px}
-  .qr-cap{font-size:11px;color:#64748b;margin-top:6px}
-  .ftr{background:#f8fafc;border-top:1px solid #e2e8f0;padding:12px;font-size:11px;color:#64748b}
+  body{min-height:100vh;background:linear-gradient(145deg,#0F294A 0%,#1E3A8A 100%);display:flex;align-items:center;justify-content:center;padding:16px}
+  .card{width:100%;max-width:410px;background:#fff;border-radius:22px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.35);text-align:center}
+  .hdr{background:#0F294A;color:#fff;padding:20px 16px 16px}
+  .badge{display:inline-block;background:rgba(34,197,94,.18);color:#86efac;border:1px solid rgba(134,239,172,.4);font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;margin-bottom:7px}
+  .hdr h1{font-size:18px;font-weight:800}
+  .hdr p{font-size:12px;color:#cbd5e1;margin-top:3px}
+  .body{padding:20px 18px 22px}
+  .stu{background:#f1f5f9;border-radius:12px;padding:9px 12px;font-size:12px;color:#475569;margin-bottom:14px}
+  .stu b{color:#0F294A;font-size:14px;display:block;margin-top:2px}
+  .amt-lbl{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.6px;font-weight:700}
+  .amt{font-size:38px;font-weight:900;color:#0F294A;margin:3px 0 16px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+  .app-btn{display:flex;align-items:center;justify-content:center;gap:7px;padding:13px 10px;border-radius:13px;text-decoration:none;font-size:14px;font-weight:800;color:#fff;box-shadow:0 6px 16px rgba(0,0,0,.12)}
+  .gpay{background:#1a73e8}
+  .phonepe{background:#5f259f}
+  .paytm{background:#00baf2}
+  .bhim{background:#0f766e}
+  .all-btn{display:block;width:100%;padding:13px;background:linear-gradient(90deg,#16a34a,#15803d);color:#fff;text-decoration:none;border-radius:13px;font-size:15px;font-weight:800;margin-bottom:16px}
+  .qr-box{border:1.5px dashed #cbd5e1;border-radius:15px;padding:10px;display:inline-block;background:#f8fafc}
+  .qr-box img{width:155px;height:155px;display:block;border-radius:8px}
+  .qr-cap{font-size:11px;color:#64748b;margin-top:5px}
+  .ftr{background:#f8fafc;border-top:1px solid #e2e8f0;padding:11px;font-size:11px;color:#64748b}
 </style>
 </head>
 <body>
   <div class="card">
     <div class="hdr">
-      <div class="badge">✔ VERIFIED SCHOOL FEE DESK</div>
+      <div class="badge">✔ OFFICIAL FEE CHECKOUT</div>
       <h1>${esc(pn)}</h1>
-      <p>Marui, Varanasi (U.P.) • Official Digital Checkout</p>
+      <p>Select Your UPI App Below</p>
     </div>
     <div class="body">
-      <div class="stu">Student / Reference<b>${esc(st)}</b></div>
-      <div class="amt-lbl">Total Payable Amount</div>
+      <div class="stu">Student<b>${esc(st)}</b></div>
+      <div class="amt-lbl">Payable Fee Amount</div>
       <div class="amt">₹${am.toLocaleString('en-IN')}/-</div>
-      <a class="pay-btn" href="${esc(upi)}">💳 PAY NOW VIA UPI</a>
-      <div class="apps">Supports PhonePe • Google Pay • Paytm • BHIM UPI</div>
+
+      <div class="grid">
+        <a class="app-btn gpay" href="${esc(gpayUrl)}">🔵 Google Pay</a>
+        <a class="app-btn phonepe" href="${esc(phonepeUrl)}">🟣 PhonePe</a>
+        <a class="app-btn paytm" href="${esc(paytmUrl)}">🔷 Paytm</a>
+        <a class="app-btn bhim" href="${esc(bhimUrl)}">🟢 BHIM UPI</a>
+      </div>
+
+      <a class="all-btn" href="${esc(genericUpi)}">💳 Any Other UPI App</a>
+
       <div class="qr-box">
         <img src="${esc(qrImg)}" alt="School UPI QR">
-        <div class="qr-cap">Or scan QR from another phone</div>
+        <div class="qr-cap">Scan QR from another device</div>
       </div>
     </div>
-    <div class="ftr">🔒 100% Secure Direct Bank UPI Transfer</div>
+    <div class="ftr">🔒 Direct Bank Transfer • No Auto-Redirect to WhatsApp</div>
   </div>
-  <script>setTimeout(function(){ location.href = ${JSON.stringify(upi).replace(/</g, '\\u003c')}; }, 900);</script>
 </body>
 </html>`);
 });
