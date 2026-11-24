@@ -3508,8 +3508,8 @@ app.get('/test-voice', async (req, res) => {
 app.get('/pay', (req, res) => {
     const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const am = Math.max(1, parseInt(req.query.am, 10) || 1);
-    const pa = req.query.pa || SCHOOL_UPI_ID;
-    const pn = req.query.pn || SCHOOL_PAYEE_NAME;
+    const pa = SCHOOL_UPI_ID;
+    const pn = SCHOOL_PAYEE_NAME;
     const st = req.query.st || 'Student';
     const tn = req.query.tn || 'JRD School Fee';
 
