@@ -415,7 +415,18 @@ async function executePendingProposal() {
         }
         return `✅ *फीस सफलतापूर्वक जमा (PAID) हो गई है!*\n━━━━━━━━━━━━━━━━━━━━━━━\n👤 *छात्र:* *${res.student}* (${res.class_name})\n📅 *सत्र:* ${res.session}\n🧾 *रसीद नं.:* \`${res.receipt_id}\`\n💰 *जमा राशि:* *₹${res.paid_amount}/-*\n📋 *विवरण:*\n${res.details}\n━━━━━━━━━━━━━━━━━━━━━━━\n_MySQL, Google Sheet और गार्जियन रसीद अलर्ट अपडेट हो चुके हैं।_`;
     }
-
+if (prop.kind === 'ATTENDANCE') {
+        const res = await callSecurePhpApi('ai_gateway.php', {
+            action: 'ai_attendance_commit',
+            sender_phone: ADMIN_OWNER_PHONE,
+            php_endpoint: prop.php_endpoint,
+            commit_payload: prop.commit_payload
+        });
+        if (res.status !== 'SUCCESS') {
+            return `❌ अटेंडेंस दर्ज करने में त्रुटि आई: ${res.message || 'Unknown error'}`;
+        }
+        return `✅ *अटेंडेंस सफलतापूर्वक दर्ज (SAVED) हो गई है!*\n━━━━━━━━━━━━━━━━━━━━━━━\n${res.message}\n_MySQL व Google Sheet अपडेट हो चुके हैं; गार्जियन/टीचर के नियमित SMS/नोटिफिकेशन अपने मौजूदा सिस्टम से चलेंगे।_`;
+    }
     return "⚠️ अज्ञात प्रस्ताव प्रकार।";
 }
 const AI_TOOLS = [
@@ -581,6 +592,44 @@ const AI_TOOLS = [
             description: "Execute and save the already-prepared pending fee payment proposal ONLY after admin explicitly says yes/confirm.",
             parameters: { type: "object", properties: {} }
         }
+        ,{
+        type: "function",
+        function: {
+            name: "prepare_attendance",
+            description: "Prepare a preview for marking student attendance (individual or whole class with exceptions) or teacher attendance (PRESENT, ABSENT, IN, OUT). Never writes to DB before confirmation.",
+            parameters: {
+                type: "object",
+                properties: {
+                    target_type: { type: "string", enum: ["STUDENT", "TEACHER"] },
+                    date: { type: "string", description: "Optional YYYY-MM-DD date, defaults to today" },
+                    teacher_query: { type: "string", description: "Teacher name in English or teacher_id when target_type is TEACHER" },
+                    status: { type: "string", description: "For TEACHER: PRESENT, ABSENT, IN, or OUT" },
+                    class_name: { type: "string", description: "For STUDENT: class name e.g. 5, 9, LKG" },
+                    default_status: { type: "string", description: "Optional 'P' or 'A' when marking entire class except specific students" },
+                    entries: {
+                        type: "array",
+                        description: "List of specific students and their status ('P', 'A', or 'L')",
+                        items: {
+                            type: "object",
+                            properties: {
+                                query: { type: "string", description: "Student name in English or enrolment" },
+                                status: { type: "string", enum: ["P", "A", "L"] }
+                            },
+                            required: ["query", "status"]
+                        }
+                    }
+                },
+                required: ["target_type"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "confirm_attendance",
+            description: "Commit and save the already-prepared attendance proposal ONLY after admin says yes/confirm.",
+            parameters: { type: "object", properties: {} }
+        }
     }
 ];
 async function runAiTool(name, args) {
@@ -661,8 +710,33 @@ async function runAiTool(name, args) {
             const msgOut = await executePendingProposal();
             return { status: 'EXECUTED', confirmation_message: msgOut };
         }
-        // 👆 यहाँ तक
-        return { status: 'error', message: 'Unknown tool' };
+       
+        if (name === 'prepare_attendance') {
+            const data = await callSecurePhpApi('ai_gateway.php', {
+                action: 'ai_attendance_preview',
+                sender_phone: ADMIN_OWNER_PHONE,
+                target_type: args.target_type || 'STUDENT',
+                date: args.date || '',
+                teacher_query: args.teacher_query || '',
+                status: args.status || '',
+                class_name: args.class_name || '',
+                default_status: args.default_status || '',
+                entries: args.entries || []
+            });
+            if (data.status === 'SUCCESS' && data.commit_payload) {
+                setPendingProposal({
+                    kind: 'ATTENDANCE',
+                    php_endpoint: data.php_endpoint,
+                    commit_payload: data.commit_payload,
+                    summary: data
+                });
+            }
+            return data;
+        }
+        if (name === 'confirm_attendance') {
+            const msgOut = await executePendingProposal();
+            return { status: 'EXECUTED', confirmation_message: msgOut };
+        }
         return { status: 'error', message: 'Unknown tool' };
     } catch (toolErr) {
         console.error(`⚠️ AI Tool [${name}] Error:`, toolErr.message);
@@ -2767,9 +2841,18 @@ else if (item.type === 'ATTENDANCE_ALERT' || item.type === 'SUBJECT_MARKS_ALERT'
 }
 
 // 🎯 E. BROADCAST (VOICE / PDF / TEXT) — [NATIONAL LEVEL STABLE & DYNAMIC ENGINE]
-                else {
-                    const msgType = String(item.msgType || item.type || 'TEXT').toUpperCase();
-                    const textBody = (item.message && item.message.trim().length > 0) ? item.message : (item.rawText || '');
+    else {
+                    if (item.isCustomText || String(item.type || '').toUpperCase() === 'CUSTOM_TEXT') {
+                        const customBody = String(item.message || item.rawText || '').trim();
+                        if (customBody.length > 0) {
+                            try { await sock.sendPresenceUpdate('composing', jid); } catch (e) {}
+                            await new Promise(r => setTimeout(r, 800));
+                            try { await sock.sendPresenceUpdate('paused', jid); } catch (e) {}
+                            await sock.sendMessage(jid, { text: customBody });
+                        }
+                    } else {
+                    const msgType = String(item.msgType || item.type || 'TEXT').toUpperCase();
+                    const textBody = (item.message && item.message.trim().length > 0) ? item.message : (item.rawText || '');
                     const cleanRawText = item.rawText || item.message || '';
                     const noticeHeading = item.noticeTitle || 'OFFICIAL NOTICE / आवश्यक सूचना';
                     const recipientName = item.name || item.studentName || 'अभिभावक / शिक्षक';
@@ -2976,15 +3059,22 @@ app.post('/send-whatsapp', (req, res) => {
         return res.status(400).json({ status: 'error', message: 'Missing params' });
     }
 
-    let formattedNumber = targetPhone.toString().replace(/[^0-9]/g, '');
-    if (formattedNumber.length === 10) formattedNumber = '91' + formattedNumber;
+    const formattedNumber = normalizeIndianPhone(targetPhone.toString());
+    if (!formattedNumber) {
+        return res.status(400).json({ status: 'error', message: 'Invalid phone number' });
+    }
 
+    const lockedText = String(message);
     messageQueue.push({
         number: formattedNumber,
-        message: String(message),
-        rawText: String(message),
-        type: 'TEXT',
-        msgType: 'TEXT',
+        message: lockedText,
+        rawText: lockedText,
+        type: 'CUSTOM_TEXT',
+        msgType: 'CUSTOM_TEXT',
+        isCustomText: true,
+        qrUrl: '',
+        upiLink: '',
+        voiceText: '',
         name: body.name || body.studentName || ''
     });
 
