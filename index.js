@@ -2182,73 +2182,87 @@ async function sendStudentProfileCard(jid, s) {
     const currentDue = parseFloat(s.current_due) || 0;
     const oldDue     = parseFloat(s.old_due) || 0;
     const grandDue   = parseFloat(s.grand_due) || (currentDue + oldDue);
+    const totalPaid  = parseFloat(s.total_paid) || 0;
     const payAssets  = buildGuardianPaymentAssets(s);
     const stuUpper   = String(s.name || 'विद्यार्थी').toUpperCase();
+    const todayDate  = new Date().toLocaleDateString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric'
+    });
 
+    const statusBadge = grandDue > 0 ? '🔴 PAYMENT DUE' : '🟢 ALL DUES CLEARED';
     const paymentNoticeBlock = grandDue > 0
-        ? `\n🚨 *कृपया जल्द से जल्द फीस जमा करें।*\n` +
-          `🏢 *सहायता हेतु विद्यालय कार्यालय में संपर्क करें।*\n`
-        : `\n🎉 *आपके पाल्य की सभी फीस जमा है।*\n` +
-          `🏢 *किसी भी जानकारी हेतु विद्यालय कार्यालय में संपर्क करें।*\n`;
+        ? `\n🔔 *Action Required:* कृपया शीघ्र शुल्क जमा कर डिजिटल रसीद प्राप्त करें।\n` +
+          `📞 *Helpdesk:* किसी भी सहायता हेतु विद्यालय कार्यालय में संपर्क करें।\n`
+        : `\n✨ *Thank You:* आपके पाल्य की सभी फीस समय पर जमा है। आपके सहयोग हेतु आभार!\n` +
+          `📞 *Helpdesk:* किसी भी जानकारी हेतु विद्यालय कार्यालय में संपर्क करें।\n`;
 
     const replyMsg =
-        `🎓 *STUDENT OFFICIAL PROFILE*\n` +
-        `🏫 *J.R.D. PUBLIC SCHOOL, MARUI*\n` +
-        `📅 *सत्र:* ${s.session || '2026-27'}\n` +
+        `🏛️ *J.R.D. PUBLIC SCHOOL, MARUI*\n` +
+        `_Official Digital ERP • Verified Student Statement_\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `🆔 *Enrolment No:* \`${s.enrolment || 'N/A'}\`\n` +
-        `📜 *Scholar No:* ${s.scholar_no || 'N/A'} | 🔢 *Roll:* ${s.roll_no || 'N/A'}\n\n` +
-        `👤 *छात्र:* *${s.name}*\n` +
-        `👨‍👦 *पिता:* ${s.father || 'N/A'}\n` +
-        `👩‍👦 *माता:* ${s.mother || 'N/A'}\n` +
-        `🏫 *कक्षा:* *${s.class}* (${s.type || 'REGULAR'})\n\n` +
-        `💰 *कुल जमा शुल्क:* *₹${s.total_paid || 0}/-*\n\n` +
-        `📊 *जमा विवरण:*\n${s.paid_list || 'कोई जमा रिकॉर्ड दर्ज नहीं है'}\n\n` +
-        `⚠️ *बकाया विवरण:*\n${s.due_list || 'सभी फ़ीस जमा हैं 🎉'}\n\n` +
+        `📅 *Session:* ${s.session || '2026-27'}   |   🗓️ *Date:* ${todayDate}\n` +
+        `📌 *Status:* *${statusBadge}*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `👤 *STUDENT DETAILS*\n` +
+        `• *Name:* *${stuUpper}*\n` +
+        `• *Class:* *${s.class}* (${s.type || 'REGULAR'})\n` +
+        `• *Enrolment ID:* \`${s.enrolment || 'N/A'}\`\n` +
+        `• *Scholar No:* ${s.scholar_no || 'N/A'}  |  *Roll No:* ${s.roll_no || 'N/A'}\n` +
+        `• *Father:* ${s.father || 'N/A'}\n` +
+        `• *Mother:* ${s.mother || 'N/A'}\n\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `🧾 *DUE SUMMARY:*\n` +
-        `• *चालू सत्र बकाया:* ₹${currentDue}\n` +
-        `• *पिछला बकाया (Old Due):* ₹${oldDue}\n` +
-        `---------------------------------------\n` +
-        `🚩 *कुल देय राशि: ₹${grandDue}/-*\n` +
+        `💼 *ACCOUNT & FEE LEDGER*\n\n` +
+        `✅ *Total Paid:* *₹${totalPaid.toLocaleString('en-IN')}/-*\n` +
+        `${s.paid_list || '• कोई जमा रिकॉर्ड दर्ज नहीं है'}\n\n` +
+        `⚠️ *Pending Breakdown:*\n` +
+        `${s.due_list || '• सभी शुल्क पूर्णतः जमा हैं 🎉'}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `🧾 *BILLING SUMMARY*\n` +
+        `• *Current Session Due:* ₹${currentDue.toLocaleString('en-IN')}\n` +
+        `• *Previous Arrears (Old):* ₹${oldDue.toLocaleString('en-IN')}\n` +
+        `───────────────────────\n` +
+        `🚩 *NET PAYABLE AMOUNT: ₹${grandDue.toLocaleString('en-IN')}/-*\n` +
         `━━━━━━━━━━━━━━━━━━━━━━━${paymentNoticeBlock}` +
-        `_यदि विवरण में त्रुटि हो, तो विद्यालय कार्यालय में संपर्क करें।_`;
+        `🔒 _System-Generated Official Statement • J.R.D. Accounts Desk_`;
 
+    // 1️⃣ Official Student Statement
     await sendReply(jid, replyMsg);
 
-    if (payAssets && sock && isBotReady) {
-        // 1️⃣ QR image (bina badlaav)
+    // 2️⃣ Official Branded QR + One-Tap PAY NOW Link (एक ही मैसेज में)
+    if (payAssets && grandDue > 0 && sock && isBotReady) {
         try {
             await new Promise(res => setTimeout(res, 1100));
             await sock.sendMessage(jid, {
                 image: { url: payAssets.qrUrl },
                 caption:
-                    `🏫 *J.R.D. PUBLIC SCHOOL — OFFICIAL FEE QR*\n` +
+                    `🏛️ *J.R.D. PUBLIC SCHOOL — OFFICIAL FEE DESK*\n` +
+                    `_Verified UPI Checkout • Instant Fee Settlement_\n` +
                     `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                    `👤 *विद्यार्थी:* *${stuUpper}* (${s.class || ''})\n` +
-                    `🚩 *देय राशि:* *₹${payAssets.grandDue}/-*\n` +
-                    `✅ _किसी भी UPI ऐप (PhonePe / GPay / Paytm) से स्कैन कर भुगतान करें।_`
+                    `👤 *Student:* *${stuUpper}* (${s.class || ''})\n` +
+                    `🆔 *Enrolment:* \`${s.enrolment || 'N/A'}\`\n` +
+                    `💰 *Payable Amount:* *₹${payAssets.grandDue.toLocaleString('en-IN')}/-*\n\n` +
+                    `⚡ *PAY ONLINE IN 1 CLICK*\n` +
+                    `_(Google Pay • PhonePe • Paytm • BHIM UPI)_\n` +
+                    `👇 *Secure Payment Link:*\n${payAssets.payLink}\n\n` +
+                    `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                    `📷 _या ऊपर दिए गए आधिकारिक QR कोड को किसी भी UPI ऐप से स्कैन करें।_\n` +
+                    `🔒 _100% Verified School Account • J.R.D. Digital ERP_`
             });
         } catch (qrErr) {
             console.error('⚠️ Profile QR send error:', qrErr.message);
-        }
-
-       // 2️⃣ सीधा PAY NOW लिंक (Chrome में खुलेगा और सारे UPI ऐप्स देगा)
-        try {
-            await new Promise(res => setTimeout(res, 900));
             await sendReply(
                 jid,
-                `💳 *ONLINE FEE PAYMENT — PAY NOW*\n` +
-                `━━━━━━━━━━━━━━━━━━━━━━━\n` +
-                `👤 *छात्र:* *${stuUpper}*\n` +
-                `💰 *राशि:* *₹${payAssets.grandDue}/-*\n\n` +
-                `👇 *Google Pay, PhonePe, Paytm या किसी भी UPI ऐप से भुगतान के लिए लिंक पर क्लिक करें:*\n${payAssets.payLink}`
+                `🏛️ *J.R.D. PUBLIC SCHOOL — PAY NOW*\n` +
+                `👤 *${stuUpper}* | 💰 *₹${payAssets.grandDue.toLocaleString('en-IN')}/-*\n` +
+                `👇 *Pay via Google Pay / PhonePe / Paytm:*\n${payAssets.payLink}`
             );
-        } catch (cardErr) {
-            console.error('⚠️ Pay link send error:', cardErr.message);
         }
-}
-    // 3️⃣ Voice note (bina badlaav)
+    }
+
+    // 3️⃣ Hindi Voice Note (Swara Neural)
     if (sock && isBotReady) {
         try {
             await new Promise(res => setTimeout(res, 1400));
