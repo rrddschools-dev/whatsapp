@@ -2139,46 +2139,6 @@ function buildGuardianPaymentAssets(student) {
     return { grandDue, payLink, qrUrl };
 }
 
-async function sendOfficialPayNowButton(jid, studentName, grandDue, payLink) {
-    if (!sock || !isBotReady) return;
-    try {
-        const msg = generateWAMessageFromContent(jid, {
-            viewOnceMessage: {
-                message: {
-                    interactiveMessage: proto.Message.InteractiveMessage.create({
-                        header: proto.Message.InteractiveMessage.Header.create({
-                            title: `🏫 J.R.D. PUBLIC SCHOOL, MARUI`,
-                            hasMediaAttachment: false
-                        }),
-                        body: proto.Message.InteractiveMessage.Body.create({
-                            text: `👤 *छात्र:* ${studentName}\n🚩 *कुल देय राशि:* *₹${grandDue}/-*\n\nनीचे दिए गए *PAY NOW* बटन पर क्लिक करके सीधे किसी भी UPI ऐप (PhonePe / GPay / Paytm) से फीस जमा करें।`
-                        }),
-                        footer: proto.Message.InteractiveMessage.Footer.create({
-                            text: `Official Digital Fee Desk • JRD Public School`
-                        }),
-                        nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-                            buttons: [
-                                {
-                                    name: "cta_url",
-                                    buttonParamsJson: JSON.stringify({
-                                        display_text: `💳 PAY NOW  ₹${grandDue}/-`,
-                                        url: payLink,
-                                        merchant_url: payLink
-                                    })
-                                }
-                            ]
-                        })
-                    })
-                }
-            }
-        }, {});
-        await sock.relayMessage(jid, msg.message, { messageId: msg.key.id });
-    } catch (btnErr) {
-        console.error('⚠️ Pay Now Button fallback:', btnErr.message);
-        await sendReply(jid, `💳 *ऑनलाइन फीस भुगतान (PAY NOW)*\n🚩 *कुल देय राशि:* *₹${grandDue}/-*\n👉 *यहाँ क्लिक करें:* ${payLink}`);
-    }
-}
-
 async function sendStudentProfileCard(jid, s) {
     const currentDue = parseFloat(s.current_due) || 0;
     const oldDue     = parseFloat(s.old_due) || 0;
@@ -2195,11 +2155,24 @@ async function sendStudentProfileCard(jid, s) {
 
     await sendReply(jid, replyMsg);
 
+    // 💳 QR इमेज + साफ़ PAY NOW लिंक (बिना UPI ID दिखे — 100% सभी फोन पर जाएगा)
     if (payAssets && sock && isBotReady) {
         try {
             await new Promise(res => setTimeout(res, 1200));
-            await sendOfficialPayNowButton(jid, s.name || 'विद्यार्थी', payAssets.grandDue, payAssets.payLink);
-        } catch (e) {}
+            await sock.sendMessage(jid, {
+                image: { url: payAssets.qrUrl },
+                caption:
+                    `🏫 *J.R.D. PUBLIC SCHOOL — ONLINE FEE PAY*\n` +
+                    `━━━━━━━━━━━━━━━━━━━━━━━\n` +
+                    `👤 *छात्र:* *${String(s.name || '').toUpperCase()}*\n` +
+                    `🚩 *कुल देय राशि:* *₹${payAssets.grandDue}/-*\n\n` +
+                    `👉 *PAY NOW (PhonePe / GPay / Paytm):*\n${payAssets.payLink}\n\n` +
+                    `_ऊपर दिए गए लिंक पर क्लिक करें या QR स्कैन कर सीधे भुगतान करें।_`
+            });
+        } catch (qrErr) {
+            console.error('⚠️ Profile QR send error:', qrErr.message);
+            await sendReply(jid, `💳 *PAY NOW — ₹${payAssets.grandDue}/-*\n👉 ${payAssets.payLink}`);
+        }
     }
 
     if (sock && isBotReady) {
