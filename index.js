@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const zlib = require('zlib');
+const crypto = require('crypto');
 const ffmpegPath = require('ffmpeg-static');
 const ffmpeg = require('fluent-ffmpeg');
 const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
@@ -331,7 +332,42 @@ async function sendAiBoxReply(jid, payload) {
         if (botSentIds.size > 200) botSentIds.delete(botSentIds.values().next().value);
     }
 }
+const AI_SHARED_SECRET = (process.env.AI_SHARED_SECRET || '').trim();
+const ADMIN_OWNER_PHONE = (process.env.ADMIN_OWNER_PHONE || '9792649799').replace(/[^0-9]/g, '').slice(-10);
+const PHP_API_BASE_URL = (process.env.PHP_API_BASE_URL || 'https://jrdschool.online').replace(/\/+$/, '');
 
+async function callSecurePhpApi(endpointFile, payloadObj) {
+    if (!AI_SHARED_SECRET) throw new Error('AI_SHARED_SECRET set nahi hai');
+    const rawBody = JSON.stringify(payloadObj || {});
+    const ts = String(Math.floor(Date.now() / 1000));
+    const nonce = crypto.randomBytes(16).toString('hex');
+    const sig = crypto.createHmac('sha256', AI_SHARED_SECRET)
+        .update(`${ts}.${nonce}.${rawBody}`)
+        .digest('hex');
+
+    const res = await axios.post(`${PHP_API_BASE_URL}/${endpointFile}`, rawBody, {
+        headers: {
+            'Content-Type': 'application/json',
+            'X-JRD-Timestamp': ts,
+            'X-JRD-Nonce': nonce,
+            'X-JRD-Signature': sig
+        },
+        timeout: 20000
+    });
+    return res.data;
+}
+
+async function isAuthorizedAdminAiMsg(jid, msg) {
+    if (!aiGroupJid || jid !== aiGroupJid) return false;
+
+    const m = msg.message || {};
+    const ctx = m.extendedTextMessage?.contextInfo || m.audioMessage?.contextInfo || m.documentMessage?.contextInfo;
+    if (ctx?.isForwarded || (ctx?.forwardingScore && ctx.forwardingScore > 0)) return false;
+
+    if (msg.key.fromMe) return true;
+    const senderPh = await extractGuardianPhone(jid, msg);
+    return senderPh === ADMIN_OWNER_PHONE;
+}
 const AI_TOOLS = [
     {
         type: "function",
@@ -1160,6 +1196,7 @@ async function startBot(skipRestore = false) {
                 }
 
                 if (!aiGroupJid || jid !== aiGroupJid) return;
+                if (!(await isAuthorizedAdminAiMsg(jid, msg))) return;
 
                 // 🛡️ Anti-Loop & Anti-Race सुरक्षा (बॉट खुद की वॉइस या टेक्स्ट पर कभी नहीं बोलेगा)
                 if (isAiBusy || rawText.startsWith('🤖 *JRD AI') || rawText.startsWith('⚠️ AI')) return;
