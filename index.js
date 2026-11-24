@@ -667,7 +667,8 @@ const AI_TOOLS = [
             description: "Execute and save the already-prepared pending fee payment proposal ONLY after admin explicitly says yes/confirm.",
             parameters: { type: "object", properties: {} }
         }
-        ,{
+    },
+    {
         type: "function",
         function: {
             name: "prepare_attendance",
