@@ -727,8 +727,12 @@ const AI_TOOLS = [
 async function runAiTool(name, args) {
     try {
         if (name === 'search_student') {
-            const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=student&token=${GAS_TOKEN}&q=${encodeURIComponent(args.query || '')}&cls=${encodeURIComponent(args.class_name || '')}`;
-            return (await axios.get(url, { timeout: 15000 })).data;
+            return await callSecurePhpApi('ai_gateway.php', {
+                action: 'ai_fee_inquiry',
+                sender_phone: ADMIN_OWNER_PHONE,
+                student_query: args.query || '',
+                class_name: args.class_name || ''
+            });
         }
         if (name === 'get_fee_defaulters') {
             const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=defaulters&token=${GAS_TOKEN}&cls=${encodeURIComponent(args.class_name || '')}`;
@@ -799,6 +803,9 @@ async function runAiTool(name, args) {
             return data;
         }
         if (name === 'confirm_fee_payment') {
+            if (!getActiveProposal()) {
+                return { status: 'NO_PROPOSAL', confirmation_message: '⚠️ सर, अभी कोई सक्रिय पेंडिंग फीस प्रस्ताव नहीं है। कृपया पहले फीस का हिसाब बनवाएँ।' };
+            }
             const msgOut = await executePendingProposal();
             return { status: 'EXECUTED', confirmation_message: msgOut };
         }
@@ -825,7 +832,10 @@ async function runAiTool(name, args) {
             }
             return data;
         }
-        if (name === 'confirm_attendance') {
+       if (name === 'confirm_attendance') {
+            if (!getActiveProposal()) {
+                return { status: 'NO_PROPOSAL', confirmation_message: '⚠️ सर, अभी कोई सक्रिय पेंडिंग अटेंडेंस प्रस्ताव नहीं है। कृपया पहले अटेंडेंस का प्रीव्यू बनवाएँ।' };
+            }
             const msgOut = await executePendingProposal();
             return { status: 'EXECUTED', confirmation_message: msgOut };
         }
@@ -967,12 +977,16 @@ async function askJrdAiBrain(userText, audioBase64 = null) {
         }
 
         // 🔒 100% CODE-LOCKED CONFIRMATION (Text + Voice Note dono par kaam karega — AI kabhi jhooth nahi bolega)
-        if (getActiveProposal() && isDirectConfirmText_(finalQuery)) {
+        const activeProp = getActiveProposal();
+        if (activeProp && isDirectConfirmText_(finalQuery)) {
             return await executePendingProposal();
         }
-        if (getActiveProposal() && isDirectCancelText_(finalQuery)) {
+        if (activeProp && isDirectCancelText_(finalQuery)) {
             clearPendingProposal();
             return "❌ पेंडिंग प्रस्ताव रद्द कर दिया गया है सर। कोई एंट्री नहीं की गई।";
+        }
+        if (!activeProp && isDirectConfirmText_(finalQuery)) {
+            return "⚠️ सर, अभी कोई सक्रिय पेंडिंग प्रस्ताव नहीं है (या समय समाप्त हो गया है)। कृपया पहले फीस या अटेंडेंस का आदेश दें।";
         }
 
         const systemMsg = {
