@@ -727,8 +727,12 @@ const AI_TOOLS = [
 async function runAiTool(name, args) {
     try {
         if (name === 'search_student') {
-            const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=student&token=${GAS_TOKEN}&q=${encodeURIComponent(args.query || '')}&cls=${encodeURIComponent(args.class_name || '')}`;
-            return (await axios.get(url, { timeout: 15000 })).data;
+            return await callSecurePhpApi('ai_gateway.php', {
+                action: 'ai_fee_inquiry',
+                sender_phone: ADMIN_OWNER_PHONE,
+                student_query: args.query || '',
+                class_name: args.class_name || ''
+            });
         }
         if (name === 'get_fee_defaulters') {
             const url = `${GOOGLE_SCRIPT_URL}?action=admin_ai_query&type=defaulters&token=${GAS_TOKEN}&cls=${encodeURIComponent(args.class_name || '')}`;
