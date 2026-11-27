@@ -276,7 +276,7 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 const BOT_API_KEY = (process.env.BOT_API_KEY || '').trim();
-const PUBLIC_PATHS = new Set(['/', '/pay']);
+const PUBLIC_PATHS = new Set(['/', '/pay', '/qr', '/queue-status']);
 const BROWSER_ADMIN_PATHS = new Set(['/qr', '/reset-qr', '/queue-status', '/clear-lid-cache']);
 
 app.use((req, res, next) => {
