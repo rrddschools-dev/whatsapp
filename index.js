@@ -2,6 +2,7 @@ const makeWASocket = require('@whiskeysockets/baileys').default;
 const { useMultiFileAuthState, DisconnectReason, Browsers, fetchLatestBaileysVersion, downloadMediaMessage, generateWAMessageFromContent, proto } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const express = require('express');
 const axios = require('axios');
 const PDFDocument = require('pdfkit');
@@ -34,8 +35,8 @@ const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz1CPviWaISRL
 const GAS_TOKEN = encodeURIComponent(process.env.API_TOKEN || "");
 const HINDI_FEMALE_VOICE = "hi-IN-SwaraNeural";
 // 🛡️ ग्लोबल क्रैश शील्ड (नेटवर्क या FFmpeg झटके पर सर्वर कभी बंद नहीं होगा)
-process.on('uncaughtException', (err) => console.error('⚠️ Uncaught Exception:', err.message));
-process.on('unhandledRejection', (reason) => console.error('⚠️ Unhandled Rejection:', reason));
+process.on('uncaughtException', (err) => console.error('⚠️ Uncaught Exception:', err.stack || err.message));
+process.on('unhandledRejection', (reason) => console.error('⚠️ Unhandled Rejection:', reason && reason.stack ? reason.stack : reason));
 
 // 📞 100% सटीक भारतीय नंबर क्लीनर (0, +91, .0 डेसिमल, डबल नंबर — सब सही करेगा)
 function normalizeIndianPhone(raw) {
@@ -271,13 +272,27 @@ function saveLidPhoneMapping(lidJid, phone) {
 loadLidPhoneMap();
 
 const app = express();
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+const BOT_API_KEY = (process.env.BOT_API_KEY || '').trim();
+const PUBLIC_PATHS = new Set(['/', '/pay']);
+const BROWSER_ADMIN_PATHS = new Set(['/qr', '/reset-qr', '/queue-status', '/clear-lid-cache']);
 
 app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-    next();
+    if (PUBLIC_PATHS.has(req.path)) return next();
+
+    let key = (req.get('x-bot-key') || '').trim();
+    if (!key && req.method === 'GET' && BROWSER_ADMIN_PATHS.has(req.path)) {
+        key = String(req.query.key || '').trim();
+    }
+
+    const a = Buffer.from(key);
+    const b = Buffer.from(BOT_API_KEY);
+    if (!BOT_API_KEY || a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        return res.status(401).json({ status: 'error', message: 'Unauthorized' });
+    }
+    next();
 });
 // 🚀 Google Sheet Bridge Route
 app.post('/sync-to-sheet', async (req, res) => {
@@ -851,7 +866,10 @@ async function runAiTool(name, args) {
                 targetType: tType,
                 className: clsName
             });
-            const resp = await axios.get(`${PHP_API_BASE_URL}/api.php?${qs.toString()}`, { timeout: 15000 });
+            const resp = await axios.get(`${PHP_API_BASE_URL}/api.php?${qs.toString()}`, {
+                timeout: 15000,
+                headers: { 'X-Service-Key': process.env.API_SERVICE_KEY || '' }
+            });
             const list = Array.isArray(resp.data?.data) ? resp.data.data : [];
 
             const uniqueMap = new Map();
@@ -2173,7 +2191,7 @@ function buildFeeDueVoiceScript_({ studentName, className, grandDue, dueText }) 
     return `नमस्ते! आदरणीय अभिभावक जी, जे आर डी पब्लिक स्कूल मरुई से विनम्र निवेदन है। आपके प्रिय बच्चे ${sName}${classPart} की फीस बकाया है, ${breakdownPart}कुल मिलाकर ${amt} रुपये देय हैं। कृपया विद्यालय में सही समय पर फीस जमा करें, क्योंकि आप ही के सहयोग से विद्यालय का वित्तीय संचालन और विकास कार्य आगे बढ़ता है तथा शिक्षकों का समय पर वेतन भी देना होता है। किसी भी जानकारी या व्यवस्था हेतु विद्यालय कार्यालय में संपर्क करें। धन्यवाद!`;
 }
 
-const PAY_LINK_SECRET = 'JRD_PAY_2026_LOCK'; // public_html/pay.php वाले $PAY_SECRET से बिल्कुल एक जैसा होना चाहिए
+const PAY_LINK_SECRET = (process.env.PAY_LINK_SECRET || 'JRD_PAY_2026_LOCK').trim();
 
 function buildGuardianPaymentAssets(student) {
     const currentDue = parseFloat(student.current_due) || 0;
@@ -3421,37 +3439,111 @@ app.post('/send-whatsapp', (req, res) => {
         queue_length: messageQueue.length
     });
 });
-app.get('/qr', (req, res) => {
-    if (isBotReady) {
-        return res.send('<h2 style="font-family:sans-serif; text-align:center; margin-top:50px; color:green;">✅ JRD VIP ERP व्हाट्सएप बोट कनेक्टेड है!</h2>');
-    }
-    if (!currentQrCode) {
-        return res.send('<h2 style="font-family:sans-serif; text-align:center; margin-top:50px;">QR Code तैयार हो रहा है... कृपया 3 सेकंड बाद Refresh करें।</h2>');
-    }
-    const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(currentQrCode)}`;
-    res.send(`
-        <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; font-family:sans-serif;">
-            <h2>🏫 JRD Public School VIP ERP Bot</h2>
-            <p>अपने व्हाट्सएप से इस QR कोड को स्कैन करें:</p>
-            <img src="${qrImageUrl}" alt="WhatsApp QR Code" style="border: 2px solid #333; padding: 10px; border-radius: 10px; width: 300px; height: 300px;"/>
-            <br>
-            <p><a href="/reset-qr?confirm=JRD2026" style="color:red; font-weight:bold;">🔄 नया QR Code बनाएँ (Force Reset)</a></p>
-        </div>
-    `);
+function renderBotAdminPage(title, contentHtml, refreshSec = 0) {
+    const refreshMeta = refreshSec > 0 ? `<meta http-equiv="refresh" content="${refreshSec}">` : '';
+    return `<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+${refreshMeta}
+<title>${title} | J.R.D. Public School ERP</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+  body{min-height:100vh;background:linear-gradient(145deg,#09192F 0%,#16325C 100%);display:flex;align-items:center;justify-content:center;padding:16px;color:#0F172A}
+  .card{width:100%;max-width:430px;background:#fff;border-radius:22px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.45);text-align:center}
+  .hdr{background:linear-gradient(135deg,#0F294A,#1D4ED8);color:#fff;padding:24px 18px 20px}
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;padding:4px 12px;border-radius:999px;margin-bottom:10px;letter-spacing:.5px}
+  .badge-ok{background:rgba(34,197,94,.2);color:#86efac;border:1px solid rgba(134,239,172,.45)}
+  .badge-warn{background:rgba(250,204,21,.2);color:#fde047;border:1px solid rgba(253,224,71,.45)}
+  .badge-info{background:rgba(56,189,248,.2);color:#bae6fd;border:1px solid rgba(186,230,253,.45)}
+  .hdr h1{font-size:19px;font-weight:800;letter-spacing:.3px}
+  .hdr p{font-size:12px;color:#dbeafe;margin-top:4px}
+  .body{padding:24px 20px}
+  .qr-box{display:inline-block;padding:14px;background:#f8fafc;border:2px dashed #cbd5e1;border-radius:18px;margin:10px 0 14px}
+  .qr-box img{width:250px;height:250px;display:block;border-radius:10px;background:#fff;padding:6px;box-shadow:0 4px 14px rgba(15,41,74,.1)}
+  .steps{text-align:left;background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:12px 14px;font-size:12.5px;color:#334155;line-height:1.65;margin-bottom:18px}
+  .steps b{color:#0F294A}
+  .status-icon{font-size:52px;margin-bottom:10px}
+  .title{font-size:18px;font-weight:800;color:#0F294A;margin-bottom:6px}
+  .sub{font-size:13px;color:#475569;line-height:1.5;margin-bottom:18px}
+  .btn{display:inline-block;width:100%;padding:12px 16px;border-radius:12px;font-size:13.5px;font-weight:700;text-decoration:none;transition:opacity .15s}
+  .btn:hover{opacity:.92}
+  .btn-primary{background:linear-gradient(90deg,#0F294A,#1D4ED8);color:#fff;box-shadow:0 6px 16px rgba(29,78,216,.28)}
+  .btn-danger{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;margin-top:10px}
+  .spinner{width:42px;height:42px;border:4px solid #e2e8f0;border-top-color:#1D4ED8;border-radius:50%;margin:10px auto 16px;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .ftr{background:#f1f5f9;border-top:1px solid #e2e8f0;padding:11px;font-size:11px;color:#64748B;font-weight:600}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="hdr">
+      <h1>🏫 J.R.D. PUBLIC SCHOOL</h1>
+      <p>Official WhatsApp ERP Gateway • Marui, Varanasi</p>
+    </div>
+    <div class="body">${contentHtml}</div>
+    <div class="ftr">🔒 Secured Admin Console • J.R.D. Digital ERP</div>
+  </div>
+</body>
+</html>`;
+}
+
+app.get('/qr', async (req, res) => {
+    const safeKey = encodeURIComponent(String(req.query.key || ''));
+
+    if (isBotReady) {
+        return res.send(renderBotAdminPage('Connected', `
+            <span class="badge badge-ok">● LIVE &amp; CONNECTED</span>
+            <div class="status-icon">✅</div>
+            <div class="title">WhatsApp Bot सक्रिय है</div>
+            <p class="sub">J.R.D. VIP ERP व्हाट्सएप बोट सफलतापूर्वक कनेक्टेड है और सभी अलर्ट व रसीद सेवाएँ सुचारू रूप से चल रही हैं।</p>
+            <a class="btn btn-primary" href="/queue-status?key=${safeKey}">📊 Live Queue Status देखें</a>
+            <a class="btn btn-danger" href="/reset-qr?key=${safeKey}" onclick="return confirm('क्या आप वाकई मौजूदा WhatsApp सेशन को लॉगआउट करके नया QR बनाना चाहते हैं?')">🔄 Force Reset Session (Logout)</a>
+        `));
+    }
+
+    if (!currentQrCode) {
+        return res.send(renderBotAdminPage('Generating QR...', `
+            <span class="badge badge-info">⏳ INITIALIZING</span>
+            <div class="spinner"></div>
+            <div class="title">QR Code तैयार हो रहा है...</div>
+            <p class="sub">कृपया प्रतीक्षा करें, यह पेज हर 4 सेकंड में अपने आप रिफ्रेश होगा।</p>
+            <a class="btn btn-primary" href="/qr?key=${safeKey}">🔄 अभी Refresh करें</a>
+        `, 4));
+    }
+
+    const qrImageUrl = await QRCode.toDataURL(currentQrCode, { width: 300, margin: 1 });
+    res.send(renderBotAdminPage('Scan WhatsApp QR', `
+        <span class="badge badge-warn">📷 SCAN REQUIRED</span>
+        <div class="qr-box">
+            <img src="${qrImageUrl}" alt="WhatsApp QR Code"/>
+        </div>
+        <div class="steps">
+            <b>कनेक्ट करने की विधि:</b><br>
+            1. अपने फ़ोन में <b>WhatsApp</b> खोलें।<br>
+            2. ऊपर <b>⋮ (Menu) → Linked Devices → Link a Device</b> चुनें।<br>
+            3. ऊपर दिए गए QR कोड को स्कैन करें।
+        </div>
+        <a class="btn btn-danger" href="/reset-qr?key=${safeKey}" onclick="return confirm('नया QR Code बनाने के लिए सेशन रीसेट करें?')">🔄 नया QR Code बनाएँ (Force Reset)</a>
+    `, 20));
 });
 
 app.get('/reset-qr', (req, res) => {
-    if (req.query.confirm !== 'JRD2026') {
-        return res.status(403).send('<h3>⚠️ Reset karne ke liye /reset-qr?confirm=JRD2026 kholein.</h3>');
-    }
+    const safeKey = encodeURIComponent(String(req.query.key || ''));
     forceClearAuthFolder();
-    isBotReady = false;
-    isConnecting = false;
-    currentQrCode = '';
-    setTimeout(() => startBot(true), 1000);
-    res.send('<h2 style="font-family:sans-serif; text-align:center; margin-top:50px;">🧹 पुराना सेशन साफ़ कर दिया गया है! <a href="/qr">/qr पेज खोलें</a>।</h2>');
+    isBotReady = false;
+    isConnecting = false;
+    currentQrCode = '';
+    setTimeout(() => startBot(true), 1000);
+    res.send(renderBotAdminPage('Session Reset', `
+        <span class="badge badge-info">🧹 SESSION CLEARED</span>
+        <div class="status-icon">🔄</div>
+        <div class="title">पुराना सेशन साफ़ हो गया</div>
+        <p class="sub">नया WhatsApp सेशन प्रारंभ किया जा रहा है। 3 सेकंड में आप अपने आप QR पेज पर पहुँच जाएंगे।</p>
+        <a class="btn btn-primary" href="/qr?key=${safeKey}">📷 /qr पेज खोलें</a>
+    `, 0).replace('</head>', `<meta http-equiv="refresh" content="3;url=/qr?key=${safeKey}"></head>`));
 });
-
 app.get('/clear-lid-cache', (req, res) => {
     try {
         if (fs.existsSync(LID_MAP_FILE)) {
